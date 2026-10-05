@@ -1,0 +1,37 @@
+{
+  "id": "elderly-sos-multichannel-notification",
+  "name": "elderly-sos-multichannel-notification",
+  "title": "独居老人 SOS 按钮多通道通知",
+  "description": "在现有 ESP32-S3 BLE/MQTT 项目上增加实体求助按钮、本地提示、MQTT 报警事件、服务端 ACK、断线暂存、心跳离线检测，以及由 Node-RED 或 Home Assistant 转发到手机、Telegram、短信和电话的多通道通知链路。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "sww",
+  "assignee": "sww",
+  "createdAt": "2026-10-05",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/main.cpp",
+    "include/app_config.h",
+    "src/dashboard_html.h",
+    "platformio.ini",
+    "README.md",
+    ".trellis/research/elderly-sos-multichannel-notification.md"
+  ],
+  "notes": "先用 BOOT 键模拟按钮，优先完成 MQTT + Node-RED + ntfy/Telegram 端到端链路；生产版本使用独立 GPIO，加入 TLS、ACK、Flash 暂存、心跳离线和服务端幂等。",
+  "meta": {
+    "source": "existing-esp32-s3-ble-mqtt",
+    "plan": "mqtt-node-red-or-home-assistant",
+    "phase": "planning"
+  }
+}
