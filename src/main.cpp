@@ -877,7 +877,7 @@ void publishHeartbeat() {
       ",\"rssi\":" + String(WiFi.RSSI()) +
       ",\"firmware\":\"" + jsonEscape(FIRMWARE_VERSION) +
       "\",\"config_version\":" + String(configVersion) +
-      "\",\"alert_state\":\"" + alertStateName() +
+      ",\"alert_state\":\"" + alertStateName() +
       "\",\"pending_alerts\":" + String(pendingAlertCount()) +
       "}";
   if (mqtt.publish(heartbeatTopic.c_str(), payload.c_str(), false)) {
