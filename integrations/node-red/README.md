@@ -35,6 +35,10 @@ SOS_SMS_TO=<phone-number>
 SOS_PHONE_URL=http://notification-adapter:8080/phone
 SOS_PHONE_TO=<phone-number>
 SOS_SIMULATOR_TOKEN=<development-only-token>
+SOS_SIMULATOR_ENABLED=true
+SOS_DEDUPE_TTL_MS=86400000
+SOS_OFFLINE_TIMEOUT_MS=90000
+SOS_HTTP_RETRY_MAX=3
 ```
 
 `sos-flow.emqx-local.json` 含有当前 Node-RED MQTT 账号密码，只保存在本机并已加入 Git 忽略规则；不要把它复制到公开仓库。
@@ -53,6 +57,8 @@ contextStorage: {
 如果没有配置 `file` store，流程会退回内存 context，重启后无法恢复去重记录。
 
 未配置的 URL 会被流程自动跳过。不要把 Telegram token、短信账号或电话服务商密钥提交到 Git；如果不想让 Node-RED 直接持有第三方凭证，URL 应指向本地通知适配器，由适配器通过服务端环境变量完成调用。
+
+`SOS_DEDUPE_TTL_MS` 控制事件去重记录保留时间，`SOS_OFFLINE_TIMEOUT_MS` 控制设备离线判断时间，`SOS_HTTP_RETRY_MAX` 控制通知 HTTP 渠道的最大重试次数。正式环境可将 `SOS_SIMULATOR_ENABLED=false` 关闭网页模拟器。
 
 Bark 使用 `SOS_BARK_URL` 指向 `https://api.day.app/<key>`，流程通过 POST JSON 发送标题、报警正文、`esp32-sos` 分组和 `alarm` 声音。Bark Token 只应放在本机 Node-RED 环境或被 Git 忽略的本地流程文件中。
 

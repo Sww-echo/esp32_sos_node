@@ -49,6 +49,8 @@
 当前开发板已配置为 EMQX Cloud TLS：`af0111c7.ala.cn-shenzhen.emqxsl.cn:8883`。
 设备账号密码保存在设备 NVS 中，不写入仓库；更换 Broker 时可以在管理页面修改主机、端口、账号和密码。TLS 开关与 CA 证书随固件编译配置。
 
+设备管理页还可以修改设备名称、安装位置、SOS 防抖和冷却时间、ACK 超时、重试次数与间隔、心跳/遥测间隔以及蜂鸣器和 LED 开关。这些运行参数保存在设备 NVS，配置版本会随固件自动迁移；密码只支持写入，不会通过状态接口或日志返回。
+
 - `devices/<设备ID>/status`
 - `devices/<设备ID>/telemetry`
 - `devices/<设备ID>/command`

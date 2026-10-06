@@ -1,0 +1,43 @@
+{
+  "id": "device-configuration-management",
+  "name": "device-configuration-management",
+  "title": "ESP32 设备与云端服务配置中心",
+  "description": "将 ESP32 的设备信息、MQTT、SOS 策略和运行参数集中配置并持久化到 NVS；完善设备管理页与配置接口；梳理 Node-RED 环境变量，使云端部署参数可配置，同时保持现有 MQTT 主题和 SOS ACK 协议兼容。",
+  "status": "in_progress",
+  "dev_type": "firmware-and-node-red",
+  "scope": "device-config-and-cloud-runtime",
+  "package": null,
+  "priority": "P1",
+  "creator": "sww",
+  "assignee": "sww",
+  "createdAt": "2026-10-06",
+  "completedAt": null,
+  "branch": "main",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [
+    "统一设备配置结构、默认值、NVS 持久化和版本迁移",
+    "增加设备配置查询与 SOS/运行策略修改接口",
+    "扩展设备管理页并隐藏敏感配置",
+    "完善 Node-RED 云端环境变量与部署文档",
+    "编译验证并记录设备端和云端验收项"
+  ],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/main.cpp",
+    "src/dashboard_html.h",
+    "include/app_config.h",
+    "integrations/node-red/sos-flow.json",
+    "integrations/node-red/DEPLOYMENT.md",
+    "README.md"
+  ],
+  "notes": "当前 ESP32 已使用 EMQX Cloud TLS 8883，Node-RED 已部署到云服务器并可通过模拟器发布 MQTT 消息。设备 MQTT 主题和 SOS ACK 协议保持兼容；配置化实施优先覆盖运行时可安全修改的参数，硬件引脚和 CA 证书继续作为固件级配置。",
+  "meta": {
+    "source": "user-requested-configuration-implementation",
+    "phase": "device-config-first",
+    "protocol_compatibility": "preserve-existing-mqtt-topics-and-payloads"
+  }
+}

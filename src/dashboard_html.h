@@ -44,6 +44,20 @@ static const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       <form id="mqttForm"><label>服务器地址</label><input name="host" id="mqttHost" required><div class="row"><div><label>端口</label><input name="port" id="mqttPort" type="number" min="1" max="65535"></div><div><label>用户名</label><input name="user" id="mqttUser"></div></div><label>密码（留空表示不修改）</label><input name="password" type="password" autocomplete="new-password"><button style="margin-top:10px">保存并重新连接</button></form><div id="mqttMsg" class="message"></div>
     </section>
 
+    <section class="card wide">
+      <h2>设备与运行策略</h2>
+      <form id="configForm">
+        <div class="row"><div><label>设备名称</label><input name="display_name" id="cfgDisplayName" maxlength="64" placeholder="例如：爷爷房间"></div><div><label>安装位置</label><input name="location" id="cfgLocation" maxlength="64" placeholder="例如：一楼卧室"></div></div>
+        <div class="row"><div><label>SOS 防抖（毫秒）</label><input name="sos_debounce_ms" id="cfgDebounce" type="number" min="20" max="5000"></div><div><label>SOS 冷却（毫秒）</label><input name="sos_cooldown_ms" id="cfgCooldown" type="number" min="0" max="3600000"></div></div>
+        <div class="row"><div><label>ACK 超时（毫秒）</label><input name="ack_timeout_ms" id="cfgAckTimeout" type="number" min="1000" max="300000"></div><div><label>最大重试次数</label><input name="max_attempts" id="cfgMaxAttempts" type="number" min="1" max="12"></div></div>
+        <div class="row"><div><label>首次重试间隔（毫秒）</label><input name="retry_base_ms" id="cfgRetryBase" type="number" min="1000" max="3600000"></div><div><label>最大重试间隔（毫秒）</label><input name="retry_max_ms" id="cfgRetryMax" type="number" min="1000" max="86400000"></div></div>
+        <div class="row"><div><label>心跳间隔（毫秒）</label><input name="heartbeat_interval_ms" id="cfgHeartbeat" type="number" min="5000" max="86400000"></div><div><label>遥测间隔（毫秒）</label><input name="telemetry_interval_ms" id="cfgTelemetry" type="number" min="5000" max="86400000"></div></div>
+        <div class="row"><div><label>蜂鸣时长（毫秒）</label><input name="buzzer_duration_ms" id="cfgBuzzerDuration" type="number" min="0" max="60000"></div><div><label>LED / 蜂鸣器</label><select name="led_enabled" id="cfgLed"><option value="true">启用 LED</option><option value="false">关闭 LED</option></select><select name="buzzer_enabled" id="cfgBuzzer" style="margin-top:8px"><option value="true">启用蜂鸣器</option><option value="false">关闭蜂鸣器</option></select></div></div>
+        <button style="margin-top:10px">保存运行配置</button>
+      </form>
+      <div id="configMsg" class="message"></div>
+    </section>
+
     <section class="card full"><h2>实时设备日志 <small style="color:var(--muted);font-weight:400">本机时间 · 运行时间</small></h2><pre id="logs">等待日志…</pre></section>
 
     <section class="card wide"><h2>MQTT 命令测试</h2><form id="publishForm" class="row"><input name="message" value='{"action":"test"}'><button>发送到 command 主题</button></form><div id="publishMsg" class="message"></div></section>
@@ -57,6 +71,7 @@ const esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 const stat=(k,v,cls='')=>`<div class="stat"><span>${esc(k)}</span><b class="${cls}">${esc(v)}</b></div>`;
 const size=n=>n>=1048576?(n/1048576).toFixed(2)+' MB':n>=1024?(n/1024).toFixed(1)+' KB':n+' B';
 let initialized=false;
+let configInitialized=false;
 let estimatedBootMs=0;
 function uptimeSeconds(value){
   const m=String(value||'').match(/(?:(\d+)天\s*)?(\d+):(\d+):(\d+)/);
@@ -66,14 +81,14 @@ async function status(){
   try{
     const r=await fetch('/api/status',{cache:'no-store'}); if(!r.ok)throw 0; const d=await r.json();
     estimatedBootMs=Date.now()-uptimeSeconds(d.system.uptime)*1000;
-    $('#liveDot').className='dot on'; $('#liveText').textContent='设备在线'; $('#subtitle').textContent=`${d.chip.model} · ${d.deviceId}`;
+    $('#liveDot').className='dot on'; $('#liveText').textContent='设备在线'; $('#subtitle').textContent=`${d.displayName?d.displayName+' · ':''}${d.chip.model} · ${d.deviceId}`;
     $('#overview').innerHTML=stat('运行时间',d.system.uptime)+stat('内部温度',d.system.temperature+' °C')+stat('空闲内存',size(d.memory.freeHeap))+stat('最低空闲内存',size(d.memory.minFreeHeap))+stat('BOOT 按钮',d.system.bootPressed?'按下':'未按下',d.system.bootPressed?'warn':'')+stat('重启原因',d.system.resetReason);
     $('#network').innerHTML=stat('Wi‑Fi',d.wifi.connected?'已连接':'未连接',d.wifi.connected?'ok':'bad')+stat('SSID',d.wifi.ssid)+stat('IP 地址',d.wifi.ip)+stat('信号',d.wifi.connected?d.wifi.rssi+' dBm':'—')+stat('配网页面热点',d.ap.ssid)+stat('热点 IP',d.ap.ip);
     $('#hardware').innerHTML=stat('芯片',d.chip.model)+stat('版本 / 核心',d.chip.revision+' / '+d.chip.cores)+stat('CPU',d.chip.cpuMHz+' MHz')+stat('Flash',size(d.memory.flash))+stat('PSRAM',size(d.memory.psram))+stat('程序大小',size(d.memory.sketch));
     $('#mqtt').innerHTML=stat('连接',d.mqtt.connected?'已连接':'未连接',d.mqtt.connected?'ok':'bad')+stat('服务器',d.mqtt.host+':'+d.mqtt.port)+stat('状态码',d.mqtt.state)+stat('状态主题',d.mqtt.statusTopic)+stat('遥测主题',d.mqtt.telemetryTopic)+stat('命令主题',d.mqtt.commandTopic);
     const alertClass=d.alert.state==='acked'?'ok':(d.alert.state==='failed'?'bad':(d.alert.state==='idle'?'':'warn'));
     $('#alert').innerHTML=stat('状态',d.alert.state,alertClass)+stat('当前事件',d.alert.activeEventId||'—')+stat('待处理数量',d.alert.pending)+stat('最近事件',d.alert.lastEventId||'—')+stat('发送次数',d.alert.attempts)+stat('ACK 时间',d.alert.lastAckUptime?d.alert.lastAckUptime+' s':'—')+stat('错误',d.alert.error||'—',d.alert.error?'bad':'');
-    $('#identity').innerHTML=stat('设备 ID',d.deviceId)+stat('STA MAC',d.wifi.mac)+stat('AP MAC',d.ap.mac)+stat('SDK',d.system.sdk)+stat('固件编译',d.system.build)+stat('主机名',d.wifi.hostname);
+    $('#identity').innerHTML=stat('设备 ID',d.deviceId)+stat('设备名称',d.displayName||'—')+stat('安装位置',d.location||'—')+stat('STA MAC',d.wifi.mac)+stat('AP MAC',d.ap.mac)+stat('SDK',d.system.sdk)+stat('固件编译',d.system.build)+stat('主机名',d.wifi.hostname);
     if(!initialized){$('#mqttHost').value=d.mqtt.host;$('#mqttPort').value=d.mqtt.port;$('#mqttUser').value=d.mqtt.user;initialized=true}
   }catch(e){$('#liveDot').className='dot';$('#liveText').textContent='连接中断'}
 }
@@ -86,17 +101,35 @@ function renderLogs(text){
   }).join('\n');
 }
 async function logs(){try{const r=await fetch('/api/logs',{cache:'no-store'});const t=await r.text();const p=$('#logs');const bottom=p.scrollTop+p.clientHeight>=p.scrollHeight-30;p.textContent=t?renderLogs(t):'暂无日志';if(bottom)p.scrollTop=p.scrollHeight}catch(e){}}
+async function loadConfig(){
+  try{
+    const r=await fetch('/api/config',{cache:'no-store'});if(!r.ok)throw 0;const c=await r.json();
+    if(configInitialized)return;
+    $('#cfgDisplayName').value=c.device.displayName||'';$('#cfgLocation').value=c.device.location||'';
+    $('#cfgDebounce').value=c.sos.debounceMs;$('#cfgCooldown').value=c.sos.cooldownMs;$('#cfgAckTimeout').value=c.sos.ackTimeoutMs;
+    $('#cfgMaxAttempts').value=c.sos.maxAttempts;$('#cfgRetryBase').value=c.sos.retryBaseMs;$('#cfgRetryMax').value=c.sos.retryMaxMs;
+    $('#cfgHeartbeat').value=c.runtime.heartbeatIntervalMs;$('#cfgTelemetry').value=c.runtime.telemetryIntervalMs;$('#cfgBuzzerDuration').value=c.runtime.buzzerDurationMs;
+    $('#cfgLed').value=String(c.runtime.ledEnabled);$('#cfgBuzzer').value=String(c.runtime.buzzerEnabled);
+    $('#cfgLed').disabled=!c.runtime.ledAvailable;$('#cfgBuzzer').disabled=!c.runtime.buzzerAvailable;configInitialized=true;
+  }catch(e){$('#configMsg').textContent='配置读取失败，请刷新页面'}
+}
+async function saveConfig(){
+  $('#configMsg').textContent='正在保存…';
+  try{const r=await fetch('/api/config',{method:'POST',body:new URLSearchParams(new FormData($('#configForm')))});const text=await r.text();$('#configMsg').textContent=text;if(r.ok)status();}
+  catch(e){$('#configMsg').textContent='配置保存失败'}
+}
 async function scanWifi(){const box=$('#networks');box.textContent='正在扫描…';try{const d=await (await fetch('/api/wifi/scan')).json();box.innerHTML=d.networks.map(n=>`<div class="network" onclick="pickSsid(this)" data-ssid="${esc(n.ssid)}"><span>${esc(n.ssid||'(隐藏网络)')}</span><span>${n.rssi} dBm · ${n.secure?'🔒':'开放'}</span></div>`).join('')||'没有发现网络'}catch(e){box.textContent='扫描失败，请稍后重试'}}
 function pickSsid(el){$('#ssid').value=el.dataset.ssid}
 async function sendForm(form,url,msg){msg.textContent='正在处理…';try{const body=new URLSearchParams(new FormData(form));const r=await fetch(url,{method:'POST',body});msg.textContent=await r.text()}catch(e){msg.textContent='请求失败'}}
 $('#wifiForm').onsubmit=e=>{e.preventDefault();sendForm(e.target,'/api/wifi',$('#wifiMsg'))};
 $('#mqttForm').onsubmit=e=>{e.preventDefault();sendForm(e.target,'/api/mqtt',$('#mqttMsg'))};
+$('#configForm').onsubmit=e=>{e.preventDefault();saveConfig()};
 $('#publishForm').onsubmit=e=>{e.preventDefault();sendForm(e.target,'/api/mqtt/publish',$('#publishMsg'))};
 async function testAlert(){if(!confirm('确定发送一次测试 SOS 报警吗？'))return;$('#alertMsg').textContent='正在进入发送队列…';try{const r=await fetch('/api/alert/test',{method:'POST',body:new URLSearchParams({confirm:'SOS'})});$('#alertMsg').textContent=await r.text();status()}catch(e){$('#alertMsg').textContent='请求失败'}}
 function refreshNow(){status();logs();$('#actionMsg').textContent='已刷新'}
 async function restartDevice(){if(confirm('确定重新启动开发板？')){await fetch('/api/restart',{method:'POST'});$('#actionMsg').textContent='设备正在重启…'}}
 async function forgetWifi(){if(confirm('确定清除保存的 Wi‑Fi 并重新配网？')){await fetch('/api/wifi/forget',{method:'POST'});$('#actionMsg').textContent='配网已清除，设备正在重启…'}}
-status();logs();setInterval(status,2000);setInterval(logs,1000);
+status();loadConfig();logs();setInterval(status,2000);setInterval(logs,1000);
 </script>
 </body></html>
 )HTML";

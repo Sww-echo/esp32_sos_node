@@ -1,0 +1,3 @@
+{"timestamp":"2026-10-06","stage":"device-config","status":"implemented","details":"Added NVS-backed runtime fields, validation, versioned loading, unified config API, SOS/heartbeat/telemetry runtime parameters, and management-page form."}
+{"timestamp":"2026-10-06","stage":"node-red-config","status":"implemented","details":"Made dedupe TTL, offline timeout, HTTP retry max, and simulator enablement configurable through environment variables; updated deployment docs."}
+{"timestamp":"2026-10-06","stage":"pending","status":"open","details":"Flash firmware to the board and import/deploy the updated Node-RED flow on the cloud instance for field verification."}

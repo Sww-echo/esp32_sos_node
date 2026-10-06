@@ -10,12 +10,14 @@
 #include <esp_system.h>
 
 #include <cstdarg>
+#include <cstdlib>
 
 #include "app_config.h"
 #include "dashboard_html.h"
 
 namespace {
 constexpr size_t MAX_LOG_LINES = 100;
+constexpr uint16_t DEVICE_CONFIG_VERSION = 1;
 constexpr int8_t BOOT_BUTTON_PIN = SOS_BUTTON_PIN;
 
 WiFiClient networkClient;
@@ -41,6 +43,20 @@ String mqttPassword;
 uint16_t mqttPort = MQTT_PORT;
 bool mqttTls = MQTT_TLS;
 bool mqttTransportReady = false;
+String deviceDisplayName;
+String deviceLocation;
+uint32_t sosDebounceMs = SOS_BUTTON_DEBOUNCE_MS;
+uint32_t sosCooldownMs = SOS_TRIGGER_COOLDOWN_MS;
+uint32_t ackTimeoutMs = SOS_ACK_TIMEOUT_MS;
+uint32_t retryBaseMs = SOS_RETRY_BASE_MS;
+uint32_t retryMaxMs = SOS_RETRY_MAX_MS;
+uint8_t maxAlertAttempts = SOS_MAX_ATTEMPTS;
+uint32_t heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS;
+uint32_t telemetryIntervalMs = 10000;
+uint32_t buzzerDurationMs = SOS_BEEP_MS;
+uint32_t configVersion = DEVICE_CONFIG_VERSION;
+bool ledEnabled = SOS_LED_PIN >= 0;
+bool buzzerEnabled = SOS_BUZZER_PIN >= 0;
 String webAdminPassword;
 String provisioningPop;
 
@@ -162,6 +178,115 @@ String jsonEscape(const String &value) {
   return escaped;
 }
 
+uint32_t readConfigUInt(const char *key, uint32_t fallback, uint32_t minimum,
+                        uint32_t maximum) {
+  const uint32_t value = preferences.getULong(key, fallback);
+  return value >= minimum && value <= maximum ? value : fallback;
+}
+
+bool parseConfigUIntArg(const char *name, uint32_t minimum, uint32_t maximum,
+                        uint32_t &value) {
+  if (!web.hasArg(name)) {
+    return true;
+  }
+  String raw = web.arg(name);
+  raw.trim();
+  if (raw.isEmpty() || raw[0] == '-' || raw[0] == '+') {
+    return false;
+  }
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(raw.c_str(), &end, 10);
+  if (end == raw.c_str() || *end != '\0' || parsed < minimum ||
+      parsed > maximum) {
+    return false;
+  }
+  value = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+bool parseConfigBoolArg(const char *name, bool &value) {
+  if (!web.hasArg(name)) {
+    return true;
+  }
+  String raw = web.arg(name);
+  raw.trim();
+  raw.toLowerCase();
+  if (raw == "true" || raw == "1" || raw == "on") {
+    value = true;
+    return true;
+  }
+  if (raw == "false" || raw == "0" || raw == "off") {
+    value = false;
+    return true;
+  }
+  return false;
+}
+
+void saveRuntimeConfig() {
+  preferences.putUShort("cfg_ver", DEVICE_CONFIG_VERSION);
+  preferences.putString("display_name", deviceDisplayName);
+  preferences.putString("location", deviceLocation);
+  preferences.putString("mqtt_host", mqttHost);
+  preferences.putUShort("mqtt_port", mqttPort);
+  preferences.putString("mqtt_user", mqttUser);
+  preferences.putString("mqtt_pass", mqttPassword);
+  preferences.putULong("sos_debounce", sosDebounceMs);
+  preferences.putULong("sos_cooldown", sosCooldownMs);
+  preferences.putULong("ack_timeout", ackTimeoutMs);
+  preferences.putULong("retry_base", retryBaseMs);
+  preferences.putULong("retry_max", retryMaxMs);
+  preferences.putUChar("max_attempts", maxAlertAttempts);
+  preferences.putULong("heartbeat_ms", heartbeatIntervalMs);
+  preferences.putULong("telemetry_ms", telemetryIntervalMs);
+  preferences.putULong("buzzer_ms", buzzerDurationMs);
+  preferences.putBool("led_enabled", ledEnabled);
+  preferences.putBool("buzzer_enabled", buzzerEnabled);
+  configVersion = DEVICE_CONFIG_VERSION;
+}
+
+void loadRuntimeConfig() {
+  configVersion = preferences.getUShort("cfg_ver", DEVICE_CONFIG_VERSION);
+  deviceDisplayName = preferences.getString("display_name", "");
+  deviceLocation = preferences.getString("location", "");
+  mqttHost = preferences.getString("mqtt_host", MQTT_HOST);
+  mqttPort = preferences.getUShort("mqtt_port", MQTT_PORT);
+  mqttUser = preferences.getString("mqtt_user", MQTT_USER);
+  mqttPassword = preferences.getString("mqtt_pass", MQTT_PASSWORD);
+  if (mqttPort == 0 || mqttPort > 65535) {
+    mqttPort = MQTT_PORT;
+  }
+  sosDebounceMs = readConfigUInt("sos_debounce", SOS_BUTTON_DEBOUNCE_MS,
+                                20, 5000);
+  sosCooldownMs = readConfigUInt("sos_cooldown", SOS_TRIGGER_COOLDOWN_MS,
+                                0, 3600000);
+  ackTimeoutMs = readConfigUInt("ack_timeout", SOS_ACK_TIMEOUT_MS,
+                               1000, 300000);
+  retryBaseMs = readConfigUInt("retry_base", SOS_RETRY_BASE_MS,
+                               1000, 3600000);
+  const uint32_t retryMaxFallback =
+      retryBaseMs > SOS_RETRY_MAX_MS ? retryBaseMs : SOS_RETRY_MAX_MS;
+  retryMaxMs = readConfigUInt("retry_max", retryMaxFallback,
+                              retryBaseMs, 86400000);
+  maxAlertAttempts = static_cast<uint8_t>(readConfigUInt(
+      "max_attempts", SOS_MAX_ATTEMPTS, 1, SOS_QUEUE_CAPACITY + 8));
+  heartbeatIntervalMs = readConfigUInt("heartbeat_ms", HEARTBEAT_INTERVAL_MS,
+                                       5000, 86400000);
+  telemetryIntervalMs = readConfigUInt("telemetry_ms", 10000,
+                                       5000, 86400000);
+  buzzerDurationMs = readConfigUInt("buzzer_ms", SOS_BEEP_MS, 0, 60000);
+  ledEnabled = preferences.getBool("led_enabled", SOS_LED_PIN >= 0);
+  buzzerEnabled = preferences.getBool("buzzer_enabled", SOS_BUZZER_PIN >= 0);
+
+  // Migrate the previous development broker setting and persist sanitized
+  // defaults once the configuration is first loaded.
+  if (MQTT_TLS && mqttHost == "192.168.1.20") {
+    mqttHost = MQTT_HOST;
+    mqttPort = MQTT_PORT;
+    addLog("已将旧开发 MQTT 配置迁移到 TLS 云端地址");
+  }
+  saveRuntimeConfig();
+}
+
 void loadWebCredentials() {
   if (WEB_ADMIN_PASSWORD[0] != '\0') {
     webAdminPassword = WEB_ADMIN_PASSWORD;
@@ -273,10 +398,10 @@ void updateAlertOutputs() {
   } else if (millis() < alertFeedbackUntilMs) {
     ledOn = (millis() / (alertFailureFeedback ? 250 : 120)) % 2 == 0;
   }
-  if (SOS_LED_PIN >= 0) {
+  if (SOS_LED_PIN >= 0 && ledEnabled) {
     digitalWrite(SOS_LED_PIN, ledOn ? HIGH : LOW);
   }
-  if (SOS_BUZZER_PIN >= 0) {
+  if (SOS_BUZZER_PIN >= 0 && buzzerEnabled) {
     bool buzzerOn = millis() < alertBeepUntilMs;
     if (!buzzerOn && alertFailureFeedback &&
         millis() < alertFeedbackUntilMs) {
@@ -408,7 +533,7 @@ void loadActiveAlert() {
   }
 
   if (hasActiveAlert()) {
-    if (activeAlertAttempts >= SOS_MAX_ATTEMPTS) {
+    if (activeAlertAttempts >= maxAlertAttempts) {
       if (lastAlertEventId.isEmpty()) {
         lastAlertEventId = activeAlertEventId;
       }
@@ -464,8 +589,8 @@ String buildAlertPayload() {
 
 uint32_t alertRetryDelayMs() {
   const uint8_t exponent = activeAlertAttempts > 4 ? 4 : activeAlertAttempts;
-  uint32_t delayMs = SOS_RETRY_BASE_MS * (1UL << exponent);
-  return delayMs > SOS_RETRY_MAX_MS ? SOS_RETRY_MAX_MS : delayMs;
+  uint32_t delayMs = retryBaseMs * (1UL << exponent);
+  return delayMs > retryMaxMs ? retryMaxMs : delayMs;
 }
 
 void markAlertFailed(const String &reason) {
@@ -491,7 +616,7 @@ void markAlertFailed(const String &reason) {
 }
 
 void scheduleAlertRetry(const String &reason) {
-  if (activeAlertAttempts >= SOS_MAX_ATTEMPTS) {
+  if (activeAlertAttempts >= maxAlertAttempts) {
     markAlertFailed(reason + "，已达到最大尝试次数");
     return;
   }
@@ -510,7 +635,7 @@ bool publishActiveAlert() {
   if (!hasActiveAlert() || !mqtt.connected()) {
     return false;
   }
-  if (activeAlertAttempts >= SOS_MAX_ATTEMPTS) {
+  if (activeAlertAttempts >= maxAlertAttempts) {
     markAlertFailed("已达到最大尝试次数");
     return false;
   }
@@ -644,7 +769,7 @@ bool requestSosAlert(const String &source) {
     return false;
   }
   if (hasAlertTriggered &&
-      millis() - lastAlertTriggerMs < SOS_TRIGGER_COOLDOWN_MS) {
+      millis() - lastAlertTriggerMs < sosCooldownMs) {
     addLog("忽略过快的重复 SOS 触发");
     return false;
   }
@@ -657,7 +782,7 @@ bool requestSosAlert(const String &source) {
   lastAlertTriggerMs = millis();
   hasAlertTriggered = true;
   alertFailureFeedback = false;
-  alertBeepUntilMs = millis() + SOS_BEEP_MS;
+  alertBeepUntilMs = millis() + buzzerDurationMs;
 
   if (!hasActiveAlert()) {
     activeAlertEventId = eventId;
@@ -700,7 +825,7 @@ void handleButton() {
     buttonChangedAtMs = millis();
   }
 
-  if (millis() - buttonChangedAtMs < SOS_BUTTON_DEBOUNCE_MS ||
+  if (millis() - buttonChangedAtMs < sosDebounceMs ||
       reading == stableButtonReading) {
     return;
   }
@@ -723,7 +848,7 @@ void handleAlertDelivery() {
 
   const uint32_t now = millis();
   if (alertState == AlertState::WaitingAck &&
-      now - activeAlertLastAttemptMs >= SOS_ACK_TIMEOUT_MS) {
+      now - activeAlertLastAttemptMs >= ackTimeoutMs) {
     scheduleAlertRetry("等待 ACK 超时");
   }
 
@@ -761,7 +886,7 @@ void handleHeartbeat() {
   if (!mqtt.connected()) {
     return;
   }
-  if (millis() - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
+  if (millis() - lastHeartbeatMs >= heartbeatIntervalMs) {
     lastHeartbeatMs = millis();
     publishHeartbeat();
   }
@@ -829,7 +954,7 @@ bool connectMqtt() {
   if (!mqtt.subscribe(alertAckTopic.c_str(), 1)) {
     addLog("MQTT 报警 ACK 主题订阅失败");
   }
-  lastHeartbeatMs = millis() - HEARTBEAT_INTERVAL_MS;
+  lastHeartbeatMs = millis() - heartbeatIntervalMs;
   publishHeartbeat();
   addLogf("MQTT 已连接：%s:%u", mqttHost.c_str(), mqttPort);
   return true;
@@ -893,6 +1018,9 @@ void handleStatusApi() {
   String json;
   json.reserve(3400);
   json = "{\"deviceId\":\"" + jsonEscape(deviceId) + "\",";
+  json += "\"displayName\":\"" + jsonEscape(deviceDisplayName) +
+          "\",\"location\":\"" + jsonEscape(deviceLocation) +
+          "\",\"configVersion\":" + String(configVersion) + ",";
   json += "\"chip\":{";
   json += "\"model\":\"" + jsonEscape(ESP.getChipModel()) + "\",";
   json += "\"revision\":" + String(ESP.getChipRevision()) + ",";
@@ -1019,11 +1147,8 @@ void handleMqttConfig() {
   mqttUser = web.arg("user");
   if (!web.arg("password").isEmpty()) {
     mqttPassword = web.arg("password");
-    preferences.putString("mqtt_pass", mqttPassword);
   }
-  preferences.putString("mqtt_host", mqttHost);
-  preferences.putUShort("mqtt_port", mqttPort);
-  preferences.putString("mqtt_user", mqttUser);
+  saveRuntimeConfig();
 
   if (mqtt.connected()) {
     mqtt.publish(statusTopic.c_str(), "offline", true);
@@ -1057,6 +1182,129 @@ void handleMqttPublish() {
   }
 }
 
+void handleConfigApi() {
+  if (!requireWebAuth()) {
+    return;
+  }
+
+  if (web.method() == HTTP_GET) {
+    String json;
+    json.reserve(1800);
+    json = "{\"version\":" + String(configVersion) + ",";
+    json += "\"device\":{\"displayName\":\"" +
+            jsonEscape(deviceDisplayName) + "\",\"location\":\"" +
+            jsonEscape(deviceLocation) + "\"},";
+    json += "\"mqtt\":{\"host\":\"" + jsonEscape(mqttHost) +
+            "\",\"port\":" + String(mqttPort) +
+            ",\"user\":\"" + jsonEscape(mqttUser) +
+            "\",\"tls\":" + String(mqttTls ? "true" : "false") +
+            ",\"passwordConfigured\":" +
+            String(mqttPassword.isEmpty() ? "false" : "true") + "},";
+    json += "\"sos\":{\"debounceMs\":" + String(sosDebounceMs) +
+            ",\"cooldownMs\":" + String(sosCooldownMs) +
+            ",\"ackTimeoutMs\":" + String(ackTimeoutMs) +
+            ",\"retryBaseMs\":" + String(retryBaseMs) +
+            ",\"retryMaxMs\":" + String(retryMaxMs) +
+            ",\"maxAttempts\":" + String(maxAlertAttempts) +
+            ",\"queueCapacity\":" + String(SOS_QUEUE_CAPACITY) + "},";
+    json += "\"runtime\":{\"heartbeatIntervalMs\":" +
+            String(heartbeatIntervalMs) +
+            ",\"telemetryIntervalMs\":" + String(telemetryIntervalMs) +
+            ",\"buzzerDurationMs\":" + String(buzzerDurationMs) +
+            ",\"ledEnabled\":" + String(ledEnabled ? "true" : "false") +
+            ",\"buzzerEnabled\":" +
+            String(buzzerEnabled ? "true" : "false") +
+            ",\"ledAvailable\":" +
+            String(SOS_LED_PIN >= 0 ? "true" : "false") +
+            ",\"buzzerAvailable\":" +
+            String(SOS_BUZZER_PIN >= 0 ? "true" : "false") + "}}";
+    web.sendHeader("Cache-Control", "no-store");
+    web.send(200, "application/json; charset=utf-8", json);
+    return;
+  }
+
+  if (web.method() != HTTP_POST) {
+    sendText(405, "仅支持 GET 或 POST");
+    return;
+  }
+
+  String nextDisplayName = deviceDisplayName;
+  String nextLocation = deviceLocation;
+  uint32_t nextDebounceMs = sosDebounceMs;
+  uint32_t nextCooldownMs = sosCooldownMs;
+  uint32_t nextAckTimeoutMs = ackTimeoutMs;
+  uint32_t nextRetryBaseMs = retryBaseMs;
+  uint32_t nextRetryMaxMs = retryMaxMs;
+  uint32_t nextMaxAttempts = maxAlertAttempts;
+  uint32_t nextHeartbeatMs = heartbeatIntervalMs;
+  uint32_t nextTelemetryMs = telemetryIntervalMs;
+  uint32_t nextBuzzerMs = buzzerDurationMs;
+  bool nextLedEnabled = ledEnabled;
+  bool nextBuzzerEnabled = buzzerEnabled;
+
+  if (web.hasArg("display_name")) {
+    nextDisplayName = web.arg("display_name");
+    nextDisplayName.trim();
+    if (nextDisplayName.length() > 64) {
+      sendText(400, "设备名称不能超过 64 个字符");
+      return;
+    }
+  }
+  if (web.hasArg("location")) {
+    nextLocation = web.arg("location");
+    nextLocation.trim();
+    if (nextLocation.length() > 64) {
+      sendText(400, "设备位置不能超过 64 个字符");
+      return;
+    }
+  }
+
+  bool valid = parseConfigUIntArg("sos_debounce_ms", 20, 5000,
+                                 nextDebounceMs) &&
+               parseConfigUIntArg("sos_cooldown_ms", 0, 3600000,
+                                 nextCooldownMs) &&
+               parseConfigUIntArg("ack_timeout_ms", 1000, 300000,
+                                 nextAckTimeoutMs) &&
+               parseConfigUIntArg("retry_base_ms", 1000, 3600000,
+                                 nextRetryBaseMs) &&
+               parseConfigUIntArg("retry_max_ms", 1000, 86400000,
+                                 nextRetryMaxMs) &&
+               parseConfigUIntArg("max_attempts", 1, SOS_QUEUE_CAPACITY + 8,
+                                 nextMaxAttempts) &&
+               parseConfigUIntArg("heartbeat_interval_ms", 5000, 86400000,
+                                 nextHeartbeatMs) &&
+               parseConfigUIntArg("telemetry_interval_ms", 5000, 86400000,
+                                 nextTelemetryMs) &&
+               parseConfigUIntArg("buzzer_duration_ms", 0, 60000,
+                                 nextBuzzerMs) &&
+               parseConfigBoolArg("led_enabled", nextLedEnabled) &&
+               parseConfigBoolArg("buzzer_enabled", nextBuzzerEnabled);
+  if (!valid || nextRetryMaxMs < nextRetryBaseMs) {
+    sendText(400, "配置参数无效，请检查数值范围和重试间隔关系");
+    return;
+  }
+
+  deviceDisplayName = nextDisplayName;
+  deviceLocation = nextLocation;
+  sosDebounceMs = nextDebounceMs;
+  sosCooldownMs = nextCooldownMs;
+  ackTimeoutMs = nextAckTimeoutMs;
+  retryBaseMs = nextRetryBaseMs;
+  retryMaxMs = nextRetryMaxMs;
+  maxAlertAttempts = static_cast<uint8_t>(nextMaxAttempts);
+  heartbeatIntervalMs = nextHeartbeatMs;
+  telemetryIntervalMs = nextTelemetryMs;
+  buzzerDurationMs = nextBuzzerMs;
+  ledEnabled = nextLedEnabled;
+  buzzerEnabled = nextBuzzerEnabled;
+  saveRuntimeConfig();
+
+  web.sendHeader("Cache-Control", "no-store");
+  web.send(200, "application/json; charset=utf-8",
+           "{\"saved\":true,\"version\":" + String(configVersion) +
+               ",\"reconnectRequired\":false,\"rebootRequired\":false}");
+}
+
 void handleAlertTest() {
   if (!requireWebAuth()) {
     return;
@@ -1081,6 +1329,8 @@ void setupWebServer() {
     web.send_P(200, "text/html; charset=utf-8", DASHBOARD_HTML);
   });
   web.on("/api/status", HTTP_GET, handleStatusApi);
+  web.on("/api/config", HTTP_GET, handleConfigApi);
+  web.on("/api/config", HTTP_POST, handleConfigApi);
   web.on("/api/logs", HTTP_GET, handleLogsApi);
   web.on("/api/wifi/scan", HTTP_GET, handleWifiScanApi);
   web.on("/api/wifi", HTTP_POST, handleWifiConfig);
@@ -1144,7 +1394,7 @@ void handleMqtt() {
   }
 
   mqtt.loop();
-  if (millis() - lastTelemetryMs >= 10000) {
+  if (millis() - lastTelemetryMs >= telemetryIntervalMs) {
     lastTelemetryMs = millis();
     publishTelemetry();
   }
@@ -1171,17 +1421,7 @@ void setup() {
   heartbeatTopic = "devices/" + deviceId + "/heartbeat";
 
   preferences.begin("device-app", false);
-  mqttHost = preferences.getString("mqtt_host", MQTT_HOST);
-  mqttPort = preferences.getUShort("mqtt_port", MQTT_PORT);
-  mqttUser = preferences.getString("mqtt_user", MQTT_USER);
-  mqttPassword = preferences.getString("mqtt_pass", MQTT_PASSWORD);
-  if (MQTT_TLS && mqttHost == "192.168.1.20") {
-    mqttHost = MQTT_HOST;
-    mqttPort = MQTT_PORT;
-    preferences.putString("mqtt_host", mqttHost);
-    preferences.putUShort("mqtt_port", mqttPort);
-    addLog("已将旧开发 MQTT 配置迁移到 TLS 云端地址");
-  }
+  loadRuntimeConfig();
   loadWebCredentials();
   loadProvisioningPop();
   loadActiveAlert();
