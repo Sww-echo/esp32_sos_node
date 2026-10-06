@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-06","check":"cloud flow stage 2 deployment","status":"passed","evidence":"/flows returned 204; 52 nodes loaded; /api/device-status returned HTTP 200"}
+{"timestamp":"2026-10-06","check":"device metadata contract","status":"passed","evidence":"firmware build includes display_name, location, config_version in alert/heartbeat payloads; Node-RED Function nodes passed syntax check"}

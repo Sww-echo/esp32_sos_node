@@ -58,6 +58,8 @@
 - `devices/<设备ID>/alert/ack`
 - `devices/<设备ID>/heartbeat`
 
+设备 heartbeat 会携带 `display_name`、`location`、`firmware` 和 `config_version`，云端 Node-RED 会保存这些信息并通过受保护的 `/api/device-status` 提供设备状态查询。
+
 向 command 主题发送 `status` 会立即上报一次遥测，发送 `restart` 会重启设备。
 
 ### SOS 报警逻辑（当前开发阶段）

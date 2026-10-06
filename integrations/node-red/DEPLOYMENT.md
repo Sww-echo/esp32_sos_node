@@ -206,6 +206,14 @@ HTTPS 证书可以由 Caddy 或 Let's Encrypt 自动维护。不要直接把 Nod
 7. 重启 Node-RED，再重复一次去重和心跳测试，确认 `context/` 持久化有效。
 8. 停止 Node-RED，确认设备端按预期重试；恢复 Node-RED 后确认事件能够 ACK。
 
+设备状态接口：
+
+```text
+GET https://你的域名/api/device-status
+```
+
+接口由当前 HTTPS Basic Auth 保护，返回 Node-RED 已记录的设备在线状态、最近心跳、固件版本和配置版本。
+
 设备端管理页当前可检查：
 
 ```text

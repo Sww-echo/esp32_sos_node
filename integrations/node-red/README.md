@@ -60,6 +60,8 @@ contextStorage: {
 
 `SOS_DEDUPE_TTL_MS` 控制事件去重记录保留时间，`SOS_OFFLINE_TIMEOUT_MS` 控制设备离线判断时间，`SOS_HTTP_RETRY_MAX` 控制通知 HTTP 渠道的最大重试次数。正式环境可将 `SOS_SIMULATOR_ENABLED=false` 关闭网页模拟器。
 
+流程还提供受保护的 `GET /api/device-status`，返回 Node-RED 最近见到的设备名称、位置、固件、配置版本、在线状态和最近心跳时间。该接口应继续放在 HTTPS Basic Auth 或 VPN 后面。
+
 Bark 使用 `SOS_BARK_URL` 指向 `https://api.day.app/<key>`，流程通过 POST JSON 发送标题、报警正文、`esp32-sos` 分组和 `alarm` 声音。Bark Token 只应放在本机 Node-RED 环境或被 Git 忽略的本地流程文件中。
 
 ## ACK 行为

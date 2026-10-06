@@ -575,6 +575,8 @@ String buildAlertPayload(const String &eventId, const String &source,
                          uint32_t createdUptime) {
   return "{\"event_id\":\"" + jsonEscape(eventId) +
          "\",\"device_id\":\"" + jsonEscape(deviceId) +
+         "\",\"display_name\":\"" + jsonEscape(deviceDisplayName) +
+         "\",\"location\":\"" + jsonEscape(deviceLocation) +
          "\",\"type\":\"sos\",\"source\":\"" +
          jsonEscape(source) + "\",\"uptime\":" +
          String(createdUptime) + ",\"rssi\":" +
@@ -869,9 +871,12 @@ void publishHeartbeat() {
   }
   const String payload =
       "{\"device_id\":\"" + jsonEscape(deviceId) +
+      "\",\"display_name\":\"" + jsonEscape(deviceDisplayName) +
+      "\",\"location\":\"" + jsonEscape(deviceLocation) +
       "\",\"uptime\":" + String(millis() / 1000) +
       ",\"rssi\":" + String(WiFi.RSSI()) +
       ",\"firmware\":\"" + jsonEscape(FIRMWARE_VERSION) +
+      "\",\"config_version\":" + String(configVersion) +
       "\",\"alert_state\":\"" + alertStateName() +
       "\",\"pending_alerts\":" + String(pendingAlertCount()) +
       "}";

@@ -106,7 +106,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "校验、去重、生成通知",
-    "func": "let p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString('utf8');\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = null; }\n}\nconst RETENTION_MS = Number(env.get('SOS_DEDUPE_TTL_MS') || 24 * 60 * 60 * 1000);\n\nif (!p || p.type !== 'sos' || !p.event_id || !p.device_id) {\n    node.warn('忽略格式不完整的 SOS 报警');\n    return null;\n}\n\nconst now = Date.now();\nlet cache;\ntry { cache = flow.get('sosDedupe', 'file') || {}; } catch (e) { cache = flow.get('sosDedupe') || {}; }\nfor (const key of Object.keys(cache)) {\n    if (now - cache[key] > RETENTION_MS) delete cache[key];\n}\nconst dedupeKey = `${p.device_id}:${p.event_id}`;\nconst duplicate = Boolean(cache[dedupeKey]);\ncache[dedupeKey] = now;\ntry { flow.set('sosDedupe', cache, 'file'); } catch (e) { flow.set('sosDedupe', cache); }\n\nconst ackTopic = String(msg.topic).replace(/\\/alert$/, '/alert/ack');\nconst ack = {\n    topic: ackTopic,\n    qos: 1,\n    retain: false,\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        device_id: p.device_id,\n        accepted: true,\n        duplicate,\n        server: 'node-red',\n        delivery: 'accepted_by_nodered',\n        received_at: new Date(now).toISOString()\n    })\n};\n\n// Always ACK duplicates so the device can stop retrying. Only the first\n// event fans out to notification channels.\nif (duplicate) return [ack, null, null, null, null, null];\n\nconst text = `SOS 求助：设备 ${p.device_id} 触发报警\\n事件：${p.event_id}\\n来源：${p.source || 'unknown'}\\n设备运行：${p.uptime || 0}s\\n信号：${p.rssi ?? 'unknown'} dBm\\n固件：${p.firmware || 'unknown'}`;\n\nconst ntfyUrl = env.get('SOS_NTFY_URL') || '';\nconst ntfy = {\n    method: 'POST',\n    url: ntfyUrl,\n    headers: {\n        'Content-Type': 'text/plain; charset=utf-8',\n        'Title': `SOS ${p.device_id}`,\n        'Priority': 'urgent',\n        'Tags': 'rotating_light,warning'\n    },\n    payload: text,\n    sos: { event_id: p.event_id, channel: 'ntfy' }\n};\n\nconst telegramUrl = env.get('SOS_TELEGRAM_URL') || '';\nconst telegram = {\n    method: 'POST',\n    url: telegramUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        chat_id: env.get('SOS_TELEGRAM_CHAT_ID') || '',\n        text\n    }),\n    sos: { event_id: p.event_id, channel: 'telegram' }\n};\n\nconst smsUrl = env.get('SOS_SMS_URL') || '';\nconst sms = {\n    method: 'POST',\n    url: smsUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_SMS_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'sms' }\n};\n\nconst phoneUrl = env.get('SOS_PHONE_URL') || '';\nconst phone = {\n    method: 'POST',\n    url: phoneUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_PHONE_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'phone' }\n};\n\nconst barkUrl = env.get('SOS_BARK_URL') || '';\nconst bark = {\n    method: 'POST',\n    url: barkUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        title: `SOS 求助 ${p.device_id}`,\n        body: text,\n        group: 'esp32-sos',\n        sound: 'alarm',\n        level: 'active'\n    }),\n    sos: { event_id: p.event_id, channel: 'bark' }\n};\n\nreturn [ack, ntfy, telegram, sms, phone, bark];",
+    "func": "let p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString('utf8');\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = null; }\n}\nconst RETENTION_MS = Number(env.get('SOS_DEDUPE_TTL_MS') || 24 * 60 * 60 * 1000);\n\nif (!p || p.type !== 'sos' || !p.event_id || !p.device_id) {\n    node.warn('忽略格式不完整的 SOS 报警');\n    return null;\n}\n\nconst now = Date.now();\nlet cache;\ntry { cache = flow.get('sosDedupe', 'file') || {}; } catch (e) { cache = flow.get('sosDedupe') || {}; }\nfor (const key of Object.keys(cache)) {\n    if (now - cache[key] > RETENTION_MS) delete cache[key];\n}\nconst dedupeKey = `${p.device_id}:${p.event_id}`;\nconst duplicate = Boolean(cache[dedupeKey]);\ncache[dedupeKey] = now;\ntry { flow.set('sosDedupe', cache, 'file'); } catch (e) { flow.set('sosDedupe', cache); }\n\nconst ackTopic = String(msg.topic).replace(/\\/alert$/, '/alert/ack');\nconst ack = {\n    topic: ackTopic,\n    qos: 1,\n    retain: false,\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        device_id: p.device_id,\n        accepted: true,\n        duplicate,\n        server: 'node-red',\n        delivery: 'accepted_by_nodered',\n        received_at: new Date(now).toISOString()\n    })\n};\n\n// Always ACK duplicates so the device can stop retrying. Only the first\n// event fans out to notification channels.\nif (duplicate) return [ack, null, null, null, null, null];\n\nconst deviceLabel = p.display_name ? `${p.display_name} (${p.device_id})` : p.device_id;\nconst location = p.location ? `\n位置：${p.location}` : '';\nconst text = `SOS 求助：设备 ${deviceLabel} 触发报警${location}\n事件：${p.event_id}\n来源：${p.source || 'unknown'}\n设备运行：${p.uptime || 0}s\n信号：${p.rssi ?? 'unknown'} dBm\n固件：${p.firmware || 'unknown'}`;\n\nconst ntfyUrl = env.get('SOS_NTFY_URL') || '';\nconst ntfy = {\n    method: 'POST',\n    url: ntfyUrl,\n    headers: {\n        'Content-Type': 'text/plain; charset=utf-8',\n        'Title': `SOS ${p.device_id}`,\n        'Priority': 'urgent',\n        'Tags': 'rotating_light,warning'\n    },\n    payload: text,\n    sos: { event_id: p.event_id, channel: 'ntfy' }\n};\n\nconst telegramUrl = env.get('SOS_TELEGRAM_URL') || '';\nconst telegram = {\n    method: 'POST',\n    url: telegramUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        chat_id: env.get('SOS_TELEGRAM_CHAT_ID') || '',\n        text\n    }),\n    sos: { event_id: p.event_id, channel: 'telegram' }\n};\n\nconst smsUrl = env.get('SOS_SMS_URL') || '';\nconst sms = {\n    method: 'POST',\n    url: smsUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_SMS_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'sms' }\n};\n\nconst phoneUrl = env.get('SOS_PHONE_URL') || '';\nconst phone = {\n    method: 'POST',\n    url: phoneUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_PHONE_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'phone' }\n};\n\nconst barkUrl = env.get('SOS_BARK_URL') || '';\nconst bark = {\n    method: 'POST',\n    url: barkUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        title: `SOS 求助 ${p.device_id}`,\n        body: text,\n        group: 'esp32-sos',\n        sound: 'alarm',\n        level: 'active'\n    }),\n    sos: { event_id: p.event_id, channel: 'bark' }\n};\n\nreturn [ack, ntfy, telegram, sms, phone, bark];",
     "outputs": 6,
     "timeout": 0,
     "noerr": 0,
@@ -481,7 +481,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "记录设备活跃时间",
-    "func": "const parts = String(msg.topic || '').split('/');\nconst deviceId = parts.length >= 2 ? parts[1] : '';\nif (!deviceId) return null;\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst isHeartbeat = parts[2] === 'heartbeat';\nconst status = typeof msg.payload === 'string' ? msg.payload.trim() : '';\nconst entry = health[deviceId] || { lastSeen: 0, offline: false, notified: false };\nentry.lastSeen = now;\nif (!isHeartbeat && status === 'offline') {\n    entry.offline = true;\n} else if (!isHeartbeat && status === 'online') {\n    entry.offline = false;\n    entry.notified = false;\n} else if (isHeartbeat) {\n    entry.offline = false;\n    entry.notified = false;\n}\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn null;",
+    "func": "const parts = String(msg.topic || '').split('/');\nconst deviceId = parts.length >= 2 ? parts[1] : '';\nif (!deviceId) return null;\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst isHeartbeat = parts[2] === 'heartbeat';\nconst status = typeof msg.payload === 'string' ? msg.payload.trim() : '';\nconst payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};\nconst entry = health[deviceId] || { lastSeen: 0, offline: false, notified: false };\nentry.lastSeen = now;\nentry.display_name = String(payload.display_name || entry.display_name || '');\nentry.location = String(payload.location || entry.location || '');\nentry.firmware = String(payload.firmware || entry.firmware || '');\nentry.config_version = Number(payload.config_version || entry.config_version || 0);\nif (!isHeartbeat && status === 'offline') {\n    entry.offline = true;\n} else if (!isHeartbeat && status === 'online') {\n    entry.offline = false;\n    entry.notified = false;\n} else if (isHeartbeat) {\n    entry.offline = false;\n    entry.notified = false;\n}\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn null;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -1016,4 +1016,53 @@
       ]
     ]
   }
+,
+{
+  "id": "elderly-device-status-in",
+  "type": "http in",
+  "z": "elderly-sos-tab",
+  "name": "设备状态接口",
+  "url": "/api/device-status",
+  "method": "get",
+  "upload": false,
+  "swaggerDoc": "",
+  "x": 170,
+  "y": 720,
+  "wires": [
+    [
+      "elderly-device-status-handler"
+    ]
+  ]
+},
+{
+  "id": "elderly-device-status-handler",
+  "type": "function",
+  "z": "elderly-sos-tab",
+  "name": "生成设备状态",
+  "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst devices = Object.keys(health).sort().map((deviceId) => {\n    const entry = health[deviceId] || {};\n    const lastSeen = Number(entry.lastSeen || 0);\n    return {\n        device_id: deviceId,\n        display_name: entry.display_name || '',\n        location: entry.location || '',\n        firmware: entry.firmware || '',\n        config_version: Number(entry.config_version || 0),\n        online: Boolean(lastSeen && now - lastSeen <= timeoutMs && !entry.offline),\n        last_seen_at: lastSeen ? new Date(lastSeen).toISOString() : null,\n        offline: Boolean(entry.offline),\n        notified: Boolean(entry.notified)\n    };\n});\nmsg.statusCode = 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    generated_at: new Date(now).toISOString(),\n    offline_timeout_ms: timeoutMs,\n    devices\n});\nreturn msg;",
+  "outputs": 1,
+  "timeout": 0,
+  "noerr": 0,
+  "initialize": "",
+  "finalize": "",
+  "libs": [],
+  "x": 410,
+  "y": 720,
+  "wires": [
+    [
+      "elderly-device-status-out"
+    ]
+  ]
+},
+{
+  "id": "elderly-device-status-out",
+  "type": "http response",
+  "z": "elderly-sos-tab",
+  "name": "返回设备状态",
+  "statusCode": "",
+  "headers": {},
+  "x": 680,
+  "y": 720,
+  "wires": []
+}
 ]
