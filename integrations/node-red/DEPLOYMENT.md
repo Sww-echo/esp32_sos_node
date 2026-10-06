@@ -9,7 +9,7 @@ ESP32 -- MQTT over TLS 8883 --> EMQX Cloud <-- MQTT over TLS 8883 -- Node-RED
                                                                           +--> 其他通知适配器
 ```
 
-Node-RED 负责订阅 SOS、heartbeat 和在线状态主题，按 `device_id + event_id` 去重，回写 ACK，再调用 Bark、ntfy、Telegram、短信或电话适配器。ESP32 收到 ACK 后才会结束当前 SOS 事件。
+Node-RED 负责订阅 SOS、heartbeat 和在线状态主题，按 `device_id + event_id` 去重，回写 ACK，再调用 Bark、ntfy、Telegram、短信、电话或通用 Webhook 适配器。LWT 离线和心跳超时也会复用 ntfy、Bark 和 Webhook 渠道。ESP32 收到 ACK 后才会结束当前 SOS 事件。
 
 ## 当前本机联调环境
 
@@ -75,7 +75,7 @@ Node-RED -- HTTPS 443 --> Bark
     └── emqxsl-ca.crt
 ```
 
-仓库已经提供可直接复制到服务器的 `docker-compose.yml`，包含自动重启、健康检查和日志轮转。内容如下：
+仓库已经提供可直接复制到服务器的 `docker-compose.yml`，包含固定 Node-RED 镜像版本、自动重启、健康检查和日志轮转。内容如下：
 
 ```yaml
 services:
@@ -249,13 +249,16 @@ SOS：acked，pending=0
 - EMQX CA 证书；
 - `.env` 的加密备份。
 
-仓库中的 `backup.sh` 会将这些内容打包并按保留天数清理旧备份：
+仓库中的 `backup.sh` 会严格检查这些内容，使用 `age` 公钥加密打包，并按保留天数清理旧备份。先在服务器生成并保护备份密钥：
 
 ```bash
+age-keygen -o /opt/esp32-sos/backup.age-key
+grep '^# public key:' /opt/esp32-sos/backup.age-key | sed 's/^# public key: //' > /opt/esp32-sos/backup.age-recipient
+chmod 600 /opt/esp32-sos/backup.age-key /opt/esp32-sos/backup.age-recipient
 RETENTION_DAYS=30 /opt/esp32-sos/backup.sh
 ```
 
-建议通过 cron 或 systemd timer 每天执行一次，并把生成的归档复制到另一台机器或对象存储。每月至少恢复一次归档，验证 `flows_cred.json`、context 和设备清单可以正常加载。
+生成文件扩展名为 `.tar.gz.age`。建议通过 cron 或 systemd timer 每天执行一次，并把归档复制到另一台机器或对象存储；备份私钥应离线保存。每月至少恢复一次归档，验证 `flows_cred.json`、context 和设备清单可以正常加载。
 
 MQTT 密码、Bark Token、Telegram Token 和短信/电话服务商密钥只放在云服务器的密钥管理或受限 `.env` 中。不要把 `sos-flow.emqx-local.json`、`.env` 或 `flows_cred.json` 提交到公开仓库。若凭证曾经出现在公开日志、截图或仓库中，应立即在对应服务端轮换。
 

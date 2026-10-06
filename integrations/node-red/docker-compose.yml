@@ -1,6 +1,6 @@
 services:
   node-red:
-    image: nodered/node-red:latest
+    image: nodered/node-red:4.0.9
     container_name: esp32-sos-node-red
     restart: unless-stopped
     env_file:

@@ -10,7 +10,7 @@
 2. 按 `device_id + event_id` 去重，重复投递仍回 ACK，但不会重复通知。
 3. 将 ACK 写回设备的 `devices/<device-id>/alert/ack`。ACK 表示 Node-RED 已接收并提交通知队列，不代表每个第三方渠道已经送达。
 4. 把首次报警扩展到 Bark、ntfy、Telegram、短信和电话 HTTP 适配器。
-5. 记录 heartbeat 和 retained/LWT status，并在超过 90 秒没有活跃信号时发送离线通知。
+5. 记录 heartbeat 和 retained/LWT status，并在 LWT 离线或超过 90 秒没有活跃信号时向已配置的 ntfy、Bark 和 Webhook 渠道发送离线通知。
 6. 通过通用 Webhook 适配器接入后续通知渠道，并提供设备清单和版本查询接口。
 
 每个已配置的 HTTP 通知渠道失败时会在 Node-RED 进程内延迟重试最多 3 次；需要跨重启、跨实例的可靠投递时，仍应把适配器放到具备持久队列的服务后面。
@@ -70,9 +70,19 @@ contextStorage: {
 ```text
 GET /api/devices
 GET /api/devices/<device-id>
+POST /api/devices/<device-id>/desired
 ```
 
 返回字段包含 `reported_firmware`、`reported_config_version`、`desired_firmware`、`desired_config_version`、首次见到时间和最近心跳时间。当前清单保存在 Node-RED 的 `file` context 中，后续设备数量增大时可以无缝迁移到 SQLite 或 PostgreSQL。
+
+目标版本写入示例：
+
+```json
+{
+  "desired_firmware": "0.2.0",
+  "desired_config_version": 2
+}
+```
 
 ## 扩展通知渠道
 
@@ -105,13 +115,16 @@ SOS_WEBHOOK_HEADERS_JSON={"Authorization":"Bearer <adapter-token>"}
 
 ## 日志、重启和备份
 
-云端部署直接使用仓库中的 `docker-compose.yml`，已包含 `restart: unless-stopped`、健康检查和日志轮转。每天执行：
+云端部署直接使用仓库中的 `docker-compose.yml`，已包含 `restart: unless-stopped`、固定 Node-RED 镜像版本、健康检查和日志轮转。备份脚本使用 `age` 公钥加密。先在服务器保存接收公钥：
 
 ```bash
+age-keygen -o /opt/esp32-sos/backup.age-key
+grep '^# public key:' /opt/esp32-sos/backup.age-key | sed 's/^# public key: //' > /opt/esp32-sos/backup.age-recipient
+chmod 600 /opt/esp32-sos/backup.age-key /opt/esp32-sos/backup.age-recipient
 /opt/esp32-sos/backup.sh
 ```
 
-脚本会备份 `runtime/`、context、流程凭据、证书和 `.env`，默认保留 30 天。备份目录和 `.env` 应设置为仅管理员可读，并定期复制到另一台机器或对象存储。
+脚本会严格检查 `runtime/`、context、流程凭据、证书和 `.env` 后再生成 `.tar.gz.age` 归档，默认保留 30 天。备份私钥应另行离线保存，并定期恢复归档验证可用性。
 
 Bark 使用 `SOS_BARK_URL` 指向 `https://api.day.app/<key>`，流程通过 POST JSON 发送标题、报警正文、`esp32-sos` 分组和 `alarm` 声音。Bark Token 只应放在本机 Node-RED 环境或被 Git 忽略的本地流程文件中。
 

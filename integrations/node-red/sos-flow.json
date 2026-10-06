@@ -521,7 +521,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "检查心跳超时",
-    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst TIMEOUT_MS = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst messages = [];\nfor (const deviceId of Object.keys(health)) {\n    const entry = health[deviceId];\n    if (!entry || entry.offline || !entry.lastSeen || now - entry.lastSeen <= TIMEOUT_MS || entry.notified) continue;\n    entry.notified = true;\n    messages.push({\n        url: env.get('SOS_NTFY_URL') || '',\n        method: 'POST',\n        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Title': `设备离线 ${deviceId}`, 'Priority': 'high', 'Tags': 'warning' },\n        payload: `SOS 设备离线：${deviceId} 已超过 ${Math.round(TIMEOUT_MS / 1000)} 秒没有心跳。`,\n        health: { device_id: deviceId, detected_at: new Date(now).toISOString() }\n    });\n}\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn messages.length ? [messages] : null;",
+    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst messages = [];\nfunction addMessage(message) { if (message && message.url) messages.push(message); }\nfunction offlineText(deviceId) {\n    return 'SOS 设备离线：' + deviceId + ' 已超过 ' +\n        Math.round(timeoutMs / 1000) + ' 秒没有心跳。';\n}\nfor (const deviceId of Object.keys(health)) {\n    const entry = health[deviceId];\n    if (!entry || !entry.lastSeen || entry.notified) continue;\n    const isOffline = Boolean(entry.offline);\n    const heartbeatExpired = now - Number(entry.lastSeen) > timeoutMs;\n    if (!isOffline && !heartbeatExpired) continue;\n    const text = offlineText(deviceId);\n    const eventId = deviceId + '-offline-' + String(now);\n    const ntfyUrl = env.get('SOS_NTFY_URL') || '';\n    addMessage(ntfyUrl ? {\n        url: ntfyUrl, method: 'POST',\n        headers: { 'Content-Type': 'text/plain; charset=utf-8',\n            'Title': '设备离线 ' + deviceId, 'Priority': 'high', 'Tags': 'warning' },\n        payload: text, sos: { event_id: eventId, channel: 'ntfy-offline' }\n    } : null);\n    const barkUrl = env.get('SOS_BARK_URL') || '';\n    addMessage(barkUrl ? {\n        url: barkUrl, method: 'POST',\n        headers: { 'Content-Type': 'application/json' },\n        payload: JSON.stringify({\n            title: '设备离线 ' + deviceId, body: text,\n            group: 'esp32-sos', sound: 'alarm', level: 'active'\n        }),\n        sos: { event_id: eventId, channel: 'bark-offline' }\n    } : null);\n    const webhookUrl = env.get('SOS_WEBHOOK_URL') || '';\n    let webhookHeaders = { 'Content-Type': 'application/json' };\n    try {\n        const configured = JSON.parse(env.get('SOS_WEBHOOK_HEADERS_JSON') || '{}');\n        if (configured && typeof configured === 'object' && !Array.isArray(configured)) {\n            webhookHeaders = { ...webhookHeaders, ...configured };\n        }\n    } catch (e) {\n        node.warn('SOS_WEBHOOK_HEADERS_JSON 不是有效 JSON，已使用默认请求头');\n    }\n    addMessage(webhookUrl ? {\n        url: webhookUrl, method: 'POST', headers: webhookHeaders,\n        payload: JSON.stringify({\n            event_id: eventId, device_id: deviceId, type: 'device_offline',\n            title: '设备离线 ' + deviceId, message: text,\n            detected_at: new Date(now).toISOString()\n        }),\n        sos: { event_id: eventId, channel: 'webhook-offline' }\n    } : null);\n    if (messages.length) entry.notified = true;\n}\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn messages.length ? [messages] : null;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -581,7 +581,7 @@
     "y": 600,
     "wires": [
       [
-        "elderly-health-debug"
+        "elderly-health-result"
       ]
     ]
   },
@@ -607,7 +607,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "ntfy 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -654,7 +654,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "telegram 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -701,7 +701,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "sms 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -748,7 +748,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "phone 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -960,7 +960,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "Bark 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -1041,7 +1041,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "生成设备清单",
-    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst requestedDeviceId = msg.req && msg.req.params && msg.req.params.device_id\n    ? String(msg.req.params.device_id) : '';\nconst devices = Object.keys(health).sort().map((deviceId) => {\n    const entry = health[deviceId] || {};\n    const lastSeen = Number(entry.lastSeen || 0);\n    const firstSeen = Number(entry.firstSeen || lastSeen || 0);\n    const reportedFirmware = entry.reported_firmware || entry.firmware || '';\n    const reportedConfigVersion = Number(entry.reported_config_version || entry.config_version || 0);\n    return {\n        device_id: deviceId, display_name: entry.display_name || '',\n        location: entry.location || '', firmware: reportedFirmware,\n        reported_firmware: reportedFirmware, config_version: reportedConfigVersion,\n        reported_config_version: reportedConfigVersion,\n        desired_firmware: entry.desired_firmware || '',\n        desired_config_version: Number(entry.desired_config_version || 0),\n        first_seen_at: firstSeen ? new Date(firstSeen).toISOString() : null,\n        last_seen_at: lastSeen ? new Date(lastSeen).toISOString() : null,\n        online: Boolean(lastSeen && now - lastSeen <= timeoutMs && !entry.offline),\n        offline: Boolean(entry.offline), notified: Boolean(entry.notified)\n    };\n}).filter((device) => !requestedDeviceId || device.device_id === requestedDeviceId);\nmsg.statusCode = requestedDeviceId && devices.length === 0 ? 404 : 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    schema_version: 1, generated_at: new Date(now).toISOString(),\n    offline_timeout_ms: timeoutMs, devices\n});\nreturn msg;",
+    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst requestedDeviceId = msg.req && msg.req.params && msg.req.params.device_id\n    ? String(msg.req.params.device_id) : '';\nconst devices = Object.keys(health).sort().map((deviceId) => {\n    const entry = health[deviceId] || {};\n    const lastSeen = Number(entry.lastSeen || 0);\n    const firstSeen = Number(entry.firstSeen || lastSeen || 0);\n    const reportedFirmware = entry.reported_firmware || entry.firmware || '';\n    const reportedConfigVersion = Number(entry.reported_config_version || entry.config_version || 0);\n    return {\n        device_id: deviceId, display_name: entry.display_name || '',\n        location: entry.location || '', firmware: reportedFirmware,\n        reported_firmware: reportedFirmware, config_version: reportedConfigVersion,\n        reported_config_version: reportedConfigVersion,\n        desired_firmware: entry.desired_firmware || '',\n        desired_config_version: Number(entry.desired_config_version || 0),\n        desired_updated_at: entry.desiredUpdatedAt ? new Date(entry.desiredUpdatedAt).toISOString() : null,\n        first_seen_at: firstSeen ? new Date(firstSeen).toISOString() : null,\n        last_seen_at: lastSeen ? new Date(lastSeen).toISOString() : null,\n        online: Boolean(lastSeen && now - lastSeen <= timeoutMs && !entry.offline),\n        offline: Boolean(entry.offline), notified: Boolean(entry.notified)\n    };\n}).filter((device) => !requestedDeviceId || device.device_id === requestedDeviceId);\nmsg.statusCode = requestedDeviceId && devices.length === 0 ? 404 : 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    schema_version: 1, generated_at: new Date(now).toISOString(),\n    offline_timeout_ms: timeoutMs, devices\n});\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -1121,7 +1121,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "Webhook 结果与重试",
-    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
     "outputs": 2,
     "timeout": 0,
     "noerr": 0,
@@ -1213,5 +1213,100 @@
         "elderly-device-status-handler"
       ]
     ]
+  },
+  {
+    "id": "elderly-health-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "离线通知结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (typeof output.url === 'string' && output.url) output.url = '[redacted]';\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1080,
+    "y": 600,
+    "wires": [
+      [
+        "elderly-health-debug"
+      ],
+      [
+        "elderly-health-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "离线通知 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1080,
+    "y": 650,
+    "wires": [
+      [
+        "elderly-health-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-desired-in",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "更新设备目标版本",
+    "url": "/api/devices/:device_id/desired",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 180,
+    "y": 800,
+    "wires": [
+      [
+        "elderly-device-desired-handler"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-desired-handler",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "保存设备目标版本",
+    "func": "let body = msg.payload;\nif (typeof body === 'string') {\n    try { body = JSON.parse(body); } catch (e) { body = {}; }\n}\nbody = body && typeof body === 'object' ? body : {};\nconst deviceId = String(msg.req && msg.req.params && msg.req.params.device_id || '').trim();\nif (!/^[A-Za-z0-9_-]{1,64}$/.test(deviceId)) {\n    msg.statusCode = 400;\n    msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n    msg.payload = JSON.stringify({ saved: false, error: 'invalid device_id' });\n    return msg;\n}\nconst hasFirmware = Object.prototype.hasOwnProperty.call(body, 'desired_firmware');\nconst hasConfig = Object.prototype.hasOwnProperty.call(body, 'desired_config_version');\nif (!hasFirmware && !hasConfig) {\n    msg.statusCode = 400;\n    msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n    msg.payload = JSON.stringify({ saved: false, error: 'no desired version provided' });\n    return msg;\n}\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst entry = health[deviceId] || {\n    firstSeen: 0, lastSeen: 0, offline: true, notified: false,\n    desired_firmware: '', desired_config_version: 0\n};\nif (hasFirmware) {\n    const firmware = String(body.desired_firmware || '').trim();\n    if (firmware.length > 64) {\n        msg.statusCode = 400;\n        msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n        msg.payload = JSON.stringify({ saved: false, error: 'desired_firmware too long' });\n        return msg;\n    }\n    entry.desired_firmware = firmware;\n}\nif (hasConfig) {\n    const configVersion = Number(body.desired_config_version);\n    if (!Number.isInteger(configVersion) || configVersion < 0 || configVersion > 2147483647) {\n        msg.statusCode = 400;\n        msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n        msg.payload = JSON.stringify({ saved: false, error: 'invalid desired_config_version' });\n        return msg;\n    }\n    entry.desired_config_version = configVersion;\n}\nentry.desiredUpdatedAt = Date.now();\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nmsg.statusCode = 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    saved: true, device_id: deviceId,\n    desired_firmware: entry.desired_firmware || '',\n    desired_config_version: Number(entry.desired_config_version || 0),\n    desired_updated_at: new Date(entry.desiredUpdatedAt).toISOString()\n});\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 470,
+    "y": 800,
+    "wires": [
+      [
+        "elderly-device-desired-response"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-desired-response",
+    "type": "http response",
+    "z": "elderly-sos-tab",
+    "name": "返回目标版本结果",
+    "statusCode": "",
+    "headers": {},
+    "x": 750,
+    "y": 800,
+    "wires": []
   }
 ]

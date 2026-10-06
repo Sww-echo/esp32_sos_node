@@ -72,6 +72,8 @@
 - [x] 增加 `GET /api/devices` 和 `GET /api/devices/:device_id` 设备清单接口。
 - [x] 保存首次发现时间、上报固件版本、上报配置版本和目标版本字段。
 - [x] 增加通用 Webhook 通知适配器，保留 Bark、ntfy、Telegram、短信和电话渠道。
+- [x] 让 LWT 离线和心跳超时复用 ntfy、Bark、Webhook 通知，并支持重试和敏感字段脱敏。
+- [x] 增加 `POST /api/devices/:device_id/desired` 写入目标固件和配置版本。
 - [x] 增加 Docker Compose 自动重启、健康检查和日志轮转配置。
-- [x] 增加 `backup.sh`，备份 Node-RED 流程、context、凭据、证书和环境变量。
+- [x] 增加固定 Node-RED 镜像版本，以及使用 `age` 加密并严格校验输入的 `backup.sh`。
 - [ ] 将更新后的流程重新部署到公网 Node-RED，并用真实 Webhook 适配器完成一次 2xx 验收。
