@@ -106,8 +106,8 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "校验、去重、生成通知",
-    "func": "let p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString('utf8');\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = null; }\n}\nconst RETENTION_MS = Number(env.get('SOS_DEDUPE_TTL_MS') || 24 * 60 * 60 * 1000);\n\nif (!p || p.type !== 'sos' || !p.event_id || !p.device_id) {\n    node.warn('忽略格式不完整的 SOS 报警');\n    return null;\n}\n\nconst now = Date.now();\nlet cache;\ntry { cache = flow.get('sosDedupe', 'file') || {}; } catch (e) { cache = flow.get('sosDedupe') || {}; }\nfor (const key of Object.keys(cache)) {\n    if (now - cache[key] > RETENTION_MS) delete cache[key];\n}\nconst dedupeKey = `${p.device_id}:${p.event_id}`;\nconst duplicate = Boolean(cache[dedupeKey]);\ncache[dedupeKey] = now;\ntry { flow.set('sosDedupe', cache, 'file'); } catch (e) { flow.set('sosDedupe', cache); }\n\nconst ackTopic = String(msg.topic).replace(/\\/alert$/, '/alert/ack');\nconst ack = {\n    topic: ackTopic,\n    qos: 1,\n    retain: false,\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        device_id: p.device_id,\n        accepted: true,\n        duplicate,\n        server: 'node-red',\n        delivery: 'accepted_by_nodered',\n        received_at: new Date(now).toISOString()\n    })\n};\n\n// Always ACK duplicates so the device can stop retrying. Only the first\n// event fans out to notification channels.\nif (duplicate) return [ack, null, null, null, null, null];\n\nconst deviceLabel = p.display_name ? `${p.display_name} (${p.device_id})` : p.device_id;\nconst location = p.location ? `\n位置：${p.location}` : '';\nconst text = `SOS 求助：设备 ${deviceLabel} 触发报警${location}\n事件：${p.event_id}\n来源：${p.source || 'unknown'}\n设备运行：${p.uptime || 0}s\n信号：${p.rssi ?? 'unknown'} dBm\n固件：${p.firmware || 'unknown'}`;\n\nconst ntfyUrl = env.get('SOS_NTFY_URL') || '';\nconst ntfy = {\n    method: 'POST',\n    url: ntfyUrl,\n    headers: {\n        'Content-Type': 'text/plain; charset=utf-8',\n        'Title': `SOS ${p.device_id}`,\n        'Priority': 'urgent',\n        'Tags': 'rotating_light,warning'\n    },\n    payload: text,\n    sos: { event_id: p.event_id, channel: 'ntfy' }\n};\n\nconst telegramUrl = env.get('SOS_TELEGRAM_URL') || '';\nconst telegram = {\n    method: 'POST',\n    url: telegramUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        chat_id: env.get('SOS_TELEGRAM_CHAT_ID') || '',\n        text\n    }),\n    sos: { event_id: p.event_id, channel: 'telegram' }\n};\n\nconst smsUrl = env.get('SOS_SMS_URL') || '';\nconst sms = {\n    method: 'POST',\n    url: smsUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_SMS_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'sms' }\n};\n\nconst phoneUrl = env.get('SOS_PHONE_URL') || '';\nconst phone = {\n    method: 'POST',\n    url: phoneUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_PHONE_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'phone' }\n};\n\nconst barkUrl = env.get('SOS_BARK_URL') || '';\nconst bark = {\n    method: 'POST',\n    url: barkUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        title: `SOS 求助 ${p.device_id}`,\n        body: text,\n        group: 'esp32-sos',\n        sound: 'alarm',\n        level: 'active'\n    }),\n    sos: { event_id: p.event_id, channel: 'bark' }\n};\n\nreturn [ack, ntfy, telegram, sms, phone, bark];",
-    "outputs": 6,
+    "func": "let p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString('utf8');\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = null; }\n}\nconst RETENTION_MS = Number(env.get('SOS_DEDUPE_TTL_MS') || 24 * 60 * 60 * 1000);\nif (!p || p.type !== 'sos' || !p.event_id || !p.device_id) {\n    node.warn('忽略格式不完整的 SOS 报警');\n    return null;\n}\nconst now = Date.now();\nlet cache;\ntry { cache = flow.get('sosDedupe', 'file') || {}; } catch (e) { cache = flow.get('sosDedupe') || {}; }\nfor (const key of Object.keys(cache)) {\n    if (now - cache[key] > RETENTION_MS) delete cache[key];\n}\nconst dedupeKey = String(p.device_id) + ':' + String(p.event_id);\nconst duplicate = Boolean(cache[dedupeKey]);\ncache[dedupeKey] = now;\ntry { flow.set('sosDedupe', cache, 'file'); } catch (e) { flow.set('sosDedupe', cache); }\nconst ackTopic = String(msg.topic).replace(/\\/alert$/, '/alert/ack');\nconst ack = {\n    topic: ackTopic, qos: 1, retain: false,\n    payload: JSON.stringify({\n        event_id: p.event_id, device_id: p.device_id, accepted: true,\n        duplicate, server: 'node-red', delivery: 'accepted_by_nodered',\n        received_at: new Date(now).toISOString()\n    })\n};\nif (duplicate) return [ack, null, null, null, null, null, null];\nconst deviceLabel = p.display_name\n    ? String(p.display_name) + ' (' + String(p.device_id) + ')'\n    : String(p.device_id);\nconst location = p.location ? '\\n位置：' + String(p.location) : '';\nconst text = [\n    'SOS 求助：设备 ' + deviceLabel + ' 触发报警' + location,\n    '事件：' + String(p.event_id),\n    '来源：' + String(p.source || 'unknown'),\n    '设备运行：' + String(p.uptime || 0) + 's',\n    '信号：' + String(p.rssi ?? 'unknown') + ' dBm',\n    '固件：' + String(p.firmware || 'unknown')\n].join('\\n');\nconst ntfyUrl = env.get('SOS_NTFY_URL') || '';\nconst ntfy = {\n    method: 'POST', url: ntfyUrl,\n    headers: { 'Content-Type': 'text/plain; charset=utf-8',\n        'Title': 'SOS ' + String(p.device_id), 'Priority': 'urgent',\n        'Tags': 'rotating_light,warning' },\n    payload: text, sos: { event_id: p.event_id, channel: 'ntfy' }\n};\nconst telegramUrl = env.get('SOS_TELEGRAM_URL') || '';\nconst telegram = {\n    method: 'POST', url: telegramUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({ chat_id: env.get('SOS_TELEGRAM_CHAT_ID') || '', text }),\n    sos: { event_id: p.event_id, channel: 'telegram' }\n};\nconst smsUrl = env.get('SOS_SMS_URL') || '';\nconst sms = {\n    method: 'POST', url: smsUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id, to: env.get('SOS_SMS_TO') || '', message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'sms' }\n};\nconst phoneUrl = env.get('SOS_PHONE_URL') || '';\nconst phone = {\n    method: 'POST', url: phoneUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id, to: env.get('SOS_PHONE_TO') || '', message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'phone' }\n};\nconst barkUrl = env.get('SOS_BARK_URL') || '';\nconst bark = {\n    method: 'POST', url: barkUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        title: 'SOS 求助 ' + String(p.device_id), body: text,\n        group: 'esp32-sos', sound: 'alarm', level: 'active'\n    }),\n    sos: { event_id: p.event_id, channel: 'bark' }\n};\n// Generic webhook adapter for future providers.\nconst webhookUrl = env.get('SOS_WEBHOOK_URL') || '';\nlet webhookHeaders = { 'Content-Type': 'application/json' };\ntry {\n    const configured = JSON.parse(env.get('SOS_WEBHOOK_HEADERS_JSON') || '{}');\n    if (configured && typeof configured === 'object' && !Array.isArray(configured)) {\n        webhookHeaders = { ...webhookHeaders, ...configured };\n    }\n} catch (e) {\n    node.warn('SOS_WEBHOOK_HEADERS_JSON 不是有效 JSON，已使用默认请求头');\n}\nconst webhook = {\n    method: 'POST', url: webhookUrl, headers: webhookHeaders,\n    payload: JSON.stringify({\n        event_id: p.event_id, device_id: p.device_id, type: 'sos',\n        title: 'SOS 求助 ' + String(p.device_id), message: text,\n        source: p.source || 'unknown', uptime: Number(p.uptime || 0),\n        rssi: Number(p.rssi || 0), firmware: p.firmware || 'unknown',\n        display_name: p.display_name || '', location: p.location || ''\n    }),\n    sos: { event_id: p.event_id, channel: 'webhook' }\n};\nreturn [ack, ntfy, telegram, sms, phone, bark, webhook];",
+    "outputs": 7,
     "timeout": 0,
     "noerr": 0,
     "initialize": "",
@@ -133,6 +133,9 @@
       ],
       [
         "elderly-sos-bark-switch"
+      ],
+      [
+        "elderly-sos-webhook-switch"
       ]
     ]
   },
@@ -481,7 +484,7 @@
     "type": "function",
     "z": "elderly-sos-tab",
     "name": "记录设备活跃时间",
-    "func": "const parts = String(msg.topic || '').split('/');\nconst deviceId = parts.length >= 2 ? parts[1] : '';\nif (!deviceId) return null;\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst isHeartbeat = parts[2] === 'heartbeat';\nconst status = typeof msg.payload === 'string' ? msg.payload.trim() : '';\nconst payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};\nconst entry = health[deviceId] || { lastSeen: 0, offline: false, notified: false };\nentry.lastSeen = now;\nentry.display_name = String(payload.display_name || entry.display_name || '');\nentry.location = String(payload.location || entry.location || '');\nentry.firmware = String(payload.firmware || entry.firmware || '');\nentry.config_version = Number(payload.config_version || entry.config_version || 0);\nif (!isHeartbeat && status === 'offline') {\n    entry.offline = true;\n} else if (!isHeartbeat && status === 'online') {\n    entry.offline = false;\n    entry.notified = false;\n} else if (isHeartbeat) {\n    entry.offline = false;\n    entry.notified = false;\n}\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn null;",
+    "func": "const parts = String(msg.topic || '').split('/');\nconst deviceId = parts.length >= 2 ? parts[1] : '';\nif (!deviceId) return null;\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst isHeartbeat = parts[2] === 'heartbeat';\nconst status = typeof msg.payload === 'string' ? msg.payload.trim() : '';\nconst payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};\nconst entry = health[deviceId] || {\n    firstSeen: now, lastSeen: 0, offline: false, notified: false,\n    desired_firmware: '', desired_config_version: 0\n};\nentry.firstSeen = Number(entry.firstSeen || now);\nentry.lastSeen = now;\nentry.display_name = String(payload.display_name || entry.display_name || '');\nentry.location = String(payload.location || entry.location || '');\nentry.firmware = String(payload.firmware || entry.firmware || '');\nentry.config_version = Number(payload.config_version || entry.config_version || 0);\nentry.reported_firmware = entry.firmware;\nentry.reported_config_version = entry.config_version;\nif (!isHeartbeat && status === 'offline') {\n    entry.offline = true;\n} else if (!isHeartbeat && status === 'online') {\n    entry.offline = false; entry.notified = false;\n} else if (isHeartbeat) {\n    entry.offline = false; entry.notified = false;\n}\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn null;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -1015,54 +1018,200 @@
         "elderly-sos-bark-http"
       ]
     ]
+  },
+  {
+    "id": "elderly-device-status-in",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "设备状态接口",
+    "url": "/api/device-status",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 170,
+    "y": 720,
+    "wires": [
+      [
+        "elderly-device-status-handler"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-status-handler",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "生成设备清单",
+    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst requestedDeviceId = msg.req && msg.req.params && msg.req.params.device_id\n    ? String(msg.req.params.device_id) : '';\nconst devices = Object.keys(health).sort().map((deviceId) => {\n    const entry = health[deviceId] || {};\n    const lastSeen = Number(entry.lastSeen || 0);\n    const firstSeen = Number(entry.firstSeen || lastSeen || 0);\n    const reportedFirmware = entry.reported_firmware || entry.firmware || '';\n    const reportedConfigVersion = Number(entry.reported_config_version || entry.config_version || 0);\n    return {\n        device_id: deviceId, display_name: entry.display_name || '',\n        location: entry.location || '', firmware: reportedFirmware,\n        reported_firmware: reportedFirmware, config_version: reportedConfigVersion,\n        reported_config_version: reportedConfigVersion,\n        desired_firmware: entry.desired_firmware || '',\n        desired_config_version: Number(entry.desired_config_version || 0),\n        first_seen_at: firstSeen ? new Date(firstSeen).toISOString() : null,\n        last_seen_at: lastSeen ? new Date(lastSeen).toISOString() : null,\n        online: Boolean(lastSeen && now - lastSeen <= timeoutMs && !entry.offline),\n        offline: Boolean(entry.offline), notified: Boolean(entry.notified)\n    };\n}).filter((device) => !requestedDeviceId || device.device_id === requestedDeviceId);\nmsg.statusCode = requestedDeviceId && devices.length === 0 ? 404 : 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    schema_version: 1, generated_at: new Date(now).toISOString(),\n    offline_timeout_ms: timeoutMs, devices\n});\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 410,
+    "y": 720,
+    "wires": [
+      [
+        "elderly-device-status-out"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-status-out",
+    "type": "http response",
+    "z": "elderly-sos-tab",
+    "name": "返回设备状态",
+    "statusCode": "",
+    "headers": {},
+    "x": 680,
+    "y": 720,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-webhook-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置通用 Webhook？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 810,
+    "y": 380,
+    "wires": [
+      [
+        "elderly-sos-webhook-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-webhook-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送通用 Webhook",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1040,
+    "y": 380,
+    "wires": [
+      [
+        "elderly-sos-webhook-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-webhook-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "Webhook 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nfunction safeForDebug(input) {\n    const output = { ...input };\n    if (input.headers && typeof input.headers === 'object') {\n        output.headers = { ...input.headers };\n        for (const key of Object.keys(output.headers)) {\n            if (/authorization|token|secret|api[-_]?key/i.test(key)) {\n                output.headers[key] = '[redacted]';\n            }\n        }\n    }\n    return output;\n}\nif (status >= 200 && status < 300) return [safeForDebug(msg), null];\nconst retryMax = Number(env.get('SOS_HTTP_RETRY_MAX') || 3);\nif (attempt >= retryMax) {\n    node.warn('通知渠道失败，已达到重试上限：' +\n        ((msg.sos && msg.sos.channel) || 'unknown'));\n    return [safeForDebug(msg), null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1250,
+    "y": 380,
+    "wires": [
+      [
+        "elderly-sos-webhook-debug"
+      ],
+      [
+        "elderly-sos-webhook-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-webhook-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "Webhook 结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1480,
+    "y": 380,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-webhook-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "Webhook 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1480,
+    "y": 430,
+    "wires": [
+      [
+        "elderly-sos-webhook-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-devices-in",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "设备清单接口",
+    "url": "/api/devices",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 160,
+    "y": 680,
+    "wires": [
+      [
+        "elderly-device-status-handler"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-device-detail-in",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "单设备状态接口",
+    "url": "/api/devices/:device_id",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 170,
+    "y": 740,
+    "wires": [
+      [
+        "elderly-device-status-handler"
+      ]
+    ]
   }
-,
-{
-  "id": "elderly-device-status-in",
-  "type": "http in",
-  "z": "elderly-sos-tab",
-  "name": "设备状态接口",
-  "url": "/api/device-status",
-  "method": "get",
-  "upload": false,
-  "swaggerDoc": "",
-  "x": 170,
-  "y": 720,
-  "wires": [
-    [
-      "elderly-device-status-handler"
-    ]
-  ]
-},
-{
-  "id": "elderly-device-status-handler",
-  "type": "function",
-  "z": "elderly-sos-tab",
-  "name": "生成设备状态",
-  "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst timeoutMs = Number(env.get('SOS_OFFLINE_TIMEOUT_MS') || 90000);\nconst devices = Object.keys(health).sort().map((deviceId) => {\n    const entry = health[deviceId] || {};\n    const lastSeen = Number(entry.lastSeen || 0);\n    return {\n        device_id: deviceId,\n        display_name: entry.display_name || '',\n        location: entry.location || '',\n        firmware: entry.firmware || '',\n        config_version: Number(entry.config_version || 0),\n        online: Boolean(lastSeen && now - lastSeen <= timeoutMs && !entry.offline),\n        last_seen_at: lastSeen ? new Date(lastSeen).toISOString() : null,\n        offline: Boolean(entry.offline),\n        notified: Boolean(entry.notified)\n    };\n});\nmsg.statusCode = 200;\nmsg.headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };\nmsg.payload = JSON.stringify({\n    generated_at: new Date(now).toISOString(),\n    offline_timeout_ms: timeoutMs,\n    devices\n});\nreturn msg;",
-  "outputs": 1,
-  "timeout": 0,
-  "noerr": 0,
-  "initialize": "",
-  "finalize": "",
-  "libs": [],
-  "x": 410,
-  "y": 720,
-  "wires": [
-    [
-      "elderly-device-status-out"
-    ]
-  ]
-},
-{
-  "id": "elderly-device-status-out",
-  "type": "http response",
-  "z": "elderly-sos-tab",
-  "name": "返回设备状态",
-  "statusCode": "",
-  "headers": {},
-  "x": 680,
-  "y": 720,
-  "wires": []
-}
 ]

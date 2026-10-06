@@ -4,13 +4,14 @@
 
 `sos-flow.json` 是当前 ESP32 SOS 固件对应的 Node-RED 导入模板。
 
-流程现在做五件事：
+流程现在做六件事：
 
 1. 订阅 `devices/+/alert`。
 2. 按 `device_id + event_id` 去重，重复投递仍回 ACK，但不会重复通知。
 3. 将 ACK 写回设备的 `devices/<device-id>/alert/ack`。ACK 表示 Node-RED 已接收并提交通知队列，不代表每个第三方渠道已经送达。
 4. 把首次报警扩展到 Bark、ntfy、Telegram、短信和电话 HTTP 适配器。
 5. 记录 heartbeat 和 retained/LWT status，并在超过 90 秒没有活跃信号时发送离线通知。
+6. 通过通用 Webhook 适配器接入后续通知渠道，并提供设备清单和版本查询接口。
 
 每个已配置的 HTTP 通知渠道失败时会在 Node-RED 进程内延迟重试最多 3 次；需要跨重启、跨实例的可靠投递时，仍应把适配器放到具备持久队列的服务后面。
 
@@ -34,8 +35,10 @@ SOS_SMS_URL=http://notification-adapter:8080/sms
 SOS_SMS_TO=<phone-number>
 SOS_PHONE_URL=http://notification-adapter:8080/phone
 SOS_PHONE_TO=<phone-number>
+SOS_WEBHOOK_URL=http://notification-adapter:8080/sos
+SOS_WEBHOOK_HEADERS_JSON={}
 SOS_SIMULATOR_TOKEN=<development-only-token>
-SOS_SIMULATOR_ENABLED=true
+SOS_SIMULATOR_ENABLED=false
 SOS_DEDUPE_TTL_MS=86400000
 SOS_OFFLINE_TIMEOUT_MS=90000
 SOS_HTTP_RETRY_MAX=3
@@ -61,6 +64,54 @@ contextStorage: {
 `SOS_DEDUPE_TTL_MS` 控制事件去重记录保留时间，`SOS_OFFLINE_TIMEOUT_MS` 控制设备离线判断时间，`SOS_HTTP_RETRY_MAX` 控制通知 HTTP 渠道的最大重试次数。正式环境可将 `SOS_SIMULATOR_ENABLED=false` 关闭网页模拟器。
 
 流程还提供受保护的 `GET /api/device-status`，返回 Node-RED 最近见到的设备名称、位置、固件、配置版本、在线状态和最近心跳时间。该接口应继续放在 HTTPS Basic Auth 或 VPN 后面。
+
+设备清单接口还包括：
+
+```text
+GET /api/devices
+GET /api/devices/<device-id>
+```
+
+返回字段包含 `reported_firmware`、`reported_config_version`、`desired_firmware`、`desired_config_version`、首次见到时间和最近心跳时间。当前清单保存在 Node-RED 的 `file` context 中，后续设备数量增大时可以无缝迁移到 SQLite 或 PostgreSQL。
+
+## 扩展通知渠道
+
+内置渠道继续使用各自的环境变量。对于钉钉、企业微信、飞书、邮件或新的短信服务商，建议新增一个小型通知适配器，并设置：
+
+```text
+SOS_WEBHOOK_URL=https://notification-adapter.example/sos
+SOS_WEBHOOK_HEADERS_JSON={"Authorization":"Bearer <adapter-token>"}
+```
+
+通用 Webhook 会收到统一 JSON：
+
+```json
+{
+  "event_id": "3865D38FCBA4-000023",
+  "device_id": "3865D38FCBA4",
+  "type": "sos",
+  "title": "SOS 求助 3865D38FCBA4",
+  "message": "SOS 求助正文",
+  "source": "web",
+  "uptime": 112,
+  "rssi": -34,
+  "firmware": "0.1.0",
+  "display_name": "",
+  "location": ""
+}
+```
+
+适配器返回 2xx 即表示成功；非 2xx 会按 `SOS_HTTP_RETRY_MAX` 重试。这样新增渠道不需要修改 ESP32、MQTT 主题或 ACK 协议。
+
+## 日志、重启和备份
+
+云端部署直接使用仓库中的 `docker-compose.yml`，已包含 `restart: unless-stopped`、健康检查和日志轮转。每天执行：
+
+```bash
+/opt/esp32-sos/backup.sh
+```
+
+脚本会备份 `runtime/`、context、流程凭据、证书和 `.env`，默认保留 30 天。备份目录和 `.env` 应设置为仅管理员可读，并定期复制到另一台机器或对象存储。
 
 Bark 使用 `SOS_BARK_URL` 指向 `https://api.day.app/<key>`，流程通过 POST JSON 发送标题、报警正文、`esp32-sos` 分组和 `alarm` 声音。Bark Token 只应放在本机 Node-RED 环境或被 Git 忽略的本地流程文件中。
 

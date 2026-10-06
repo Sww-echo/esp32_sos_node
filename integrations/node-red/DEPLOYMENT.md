@@ -75,7 +75,7 @@ Node-RED -- HTTPS 443 --> Bark
     └── emqxsl-ca.crt
 ```
 
-`docker-compose.yml`：
+仓库已经提供可直接复制到服务器的 `docker-compose.yml`，包含自动重启、健康检查和日志轮转。内容如下：
 
 ```yaml
 services:
@@ -95,8 +95,10 @@ services:
       SOS_SMS_TO: ${SOS_SMS_TO:-}
       SOS_PHONE_URL: ${SOS_PHONE_URL:-}
       SOS_PHONE_TO: ${SOS_PHONE_TO:-}
+      SOS_WEBHOOK_URL: ${SOS_WEBHOOK_URL:-}
+      SOS_WEBHOOK_HEADERS_JSON: ${SOS_WEBHOOK_HEADERS_JSON:-}
       SOS_SIMULATOR_TOKEN: ${SOS_SIMULATOR_TOKEN:-}
-      SOS_SIMULATOR_ENABLED: ${SOS_SIMULATOR_ENABLED:-true}
+      SOS_SIMULATOR_ENABLED: ${SOS_SIMULATOR_ENABLED:-false}
       SOS_DEDUPE_TTL_MS: ${SOS_DEDUPE_TTL_MS:-86400000}
       SOS_OFFLINE_TIMEOUT_MS: ${SOS_OFFLINE_TIMEOUT_MS:-90000}
       SOS_HTTP_RETRY_MAX: ${SOS_HTTP_RETRY_MAX:-3}
@@ -118,8 +120,10 @@ SOS_SMS_URL=
 SOS_SMS_TO=
 SOS_PHONE_URL=
 SOS_PHONE_TO=
+SOS_WEBHOOK_URL=
+SOS_WEBHOOK_HEADERS_JSON={}
 SOS_SIMULATOR_TOKEN=设置一个随机的联调令牌
-SOS_SIMULATOR_ENABLED=true
+SOS_SIMULATOR_ENABLED=false
 SOS_DEDUPE_TTL_MS=86400000
 SOS_OFFLINE_TIMEOUT_MS=90000
 SOS_HTTP_RETRY_MAX=3
@@ -128,6 +132,9 @@ NODE_RED_CREDENTIAL_SECRET=设置一个长期固定的随机值
 
 ```bash
 chmod 600 .env
+cp /path/to/project/integrations/node-red/docker-compose.yml .
+cp /path/to/project/integrations/node-red/backup.sh .
+chmod 700 backup.sh
 docker compose up -d
 docker compose logs -f node-red
 ```
@@ -214,6 +221,15 @@ GET https://你的域名/api/device-status
 
 接口由当前 HTTPS Basic Auth 保护，返回 Node-RED 已记录的设备在线状态、最近心跳、固件版本和配置版本。
 
+设备清单接口：
+
+```text
+GET https://你的域名/api/devices
+GET https://你的域名/api/devices/<device-id>
+```
+
+返回内容包含上报版本（`reported_firmware`、`reported_config_version`）、目标版本字段（`desired_firmware`、`desired_config_version`）、首次见到时间和最近心跳时间。设备清单当前使用持久化 `file` context 保存，设备规模扩大后可迁移到 SQLite 或 PostgreSQL。
+
 设备端管理页当前可检查：
 
 ```text
@@ -232,6 +248,14 @@ SOS：acked，pending=0
 - `runtime/context/`；
 - EMQX CA 证书；
 - `.env` 的加密备份。
+
+仓库中的 `backup.sh` 会将这些内容打包并按保留天数清理旧备份：
+
+```bash
+RETENTION_DAYS=30 /opt/esp32-sos/backup.sh
+```
+
+建议通过 cron 或 systemd timer 每天执行一次，并把生成的归档复制到另一台机器或对象存储。每月至少恢复一次归档，验证 `flows_cred.json`、context 和设备清单可以正常加载。
 
 MQTT 密码、Bark Token、Telegram Token 和短信/电话服务商密钥只放在云服务器的密钥管理或受限 `.env` 中。不要把 `sos-flow.emqx-local.json`、`.env` 或 `flows_cred.json` 提交到公开仓库。若凭证曾经出现在公开日志、截图或仓库中，应立即在对应服务端轮换。
 

@@ -1,0 +1,46 @@
+services:
+  node-red:
+    image: nodered/node-red:latest
+    container_name: esp32-sos-node-red
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:1880:1880"
+    environment:
+      EMQX_NODE_RED_PASSWORD: ${EMQX_NODE_RED_PASSWORD}
+      SOS_BARK_URL: ${SOS_BARK_URL:-}
+      SOS_NTFY_URL: ${SOS_NTFY_URL:-}
+      SOS_TELEGRAM_URL: ${SOS_TELEGRAM_URL:-}
+      SOS_TELEGRAM_CHAT_ID: ${SOS_TELEGRAM_CHAT_ID:-}
+      SOS_SMS_URL: ${SOS_SMS_URL:-}
+      SOS_SMS_TO: ${SOS_SMS_TO:-}
+      SOS_PHONE_URL: ${SOS_PHONE_URL:-}
+      SOS_PHONE_TO: ${SOS_PHONE_TO:-}
+      SOS_WEBHOOK_URL: ${SOS_WEBHOOK_URL:-}
+      SOS_WEBHOOK_HEADERS_JSON: ${SOS_WEBHOOK_HEADERS_JSON:-}
+      SOS_SIMULATOR_TOKEN: ${SOS_SIMULATOR_TOKEN:-}
+      SOS_SIMULATOR_ENABLED: ${SOS_SIMULATOR_ENABLED:-false}
+      SOS_DEDUPE_TTL_MS: ${SOS_DEDUPE_TTL_MS:-86400000}
+      SOS_OFFLINE_TIMEOUT_MS: ${SOS_OFFLINE_TIMEOUT_MS:-90000}
+      SOS_HTTP_RETRY_MAX: ${SOS_HTTP_RETRY_MAX:-3}
+      NODE_RED_CREDENTIAL_SECRET: ${NODE_RED_CREDENTIAL_SECRET}
+    volumes:
+      - ./runtime:/data
+      - ./certs/emqxsl-ca.crt:/data/certs/emqxsl-ca.crt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "require('http').get('http://127.0.0.1:1880/', r =>
+          process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () =>
+          process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

@@ -81,7 +81,7 @@
 
 ## Node-RED 通知流程
 
-项目提供了可导入的 [Node-RED SOS 流程](integrations/node-red/sos-flow.json)、[配置说明](integrations/node-red/README.md) 和 [部署流程](integrations/node-red/DEPLOYMENT.md)。流程已切换到 EMQX Cloud TLS 8883，并会按 `event_id` 去重、回传 ACK，支持 Bark、ntfy、Telegram、短信和电话 HTTP 适配器。当前开发云端已为设备和 Node-RED 配置独立账号及按主题 ACL。
+项目提供了可导入的 [Node-RED SOS 流程](integrations/node-red/sos-flow.json)、[配置说明](integrations/node-red/README.md) 和 [部署流程](integrations/node-red/DEPLOYMENT.md)。流程已切换到 EMQX Cloud TLS 8883，并会按 `event_id` 去重、回传 ACK，支持 Bark、ntfy、Telegram、短信、电话适配器和通用 Webhook。通用 Webhook 用于接入后续的钉钉、企业微信、飞书、邮件等渠道，保持 ESP32 和 MQTT 协议不变。设备清单接口提供固件版本、配置版本和心跳状态。
 
 导入流程后可打开 `http://<Node-RED 地址>:1880/sos-simulator`，用网页生成 SOS 事件并重复投递同一个 `event_id` 来验证通知和去重交互。
 
