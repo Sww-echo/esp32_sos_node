@@ -1,0 +1,1019 @@
+[
+  {
+    "id": "elderly-sos-tab",
+    "type": "tab",
+    "label": "ESP32 SOS 多通道通知",
+    "disabled": false,
+    "info": "ESP32 SOS 报警：MQTT 接收、持久化 event_id 去重、ACK、HTTP 渠道重试、heartbeat/status 离线检测，以及开发用网页模拟器。"
+  },
+  {
+    "id": "elderly-sos-comment",
+    "type": "comment",
+    "z": "elderly-sos-tab",
+    "name": "部署前配置 Node-RED 环境变量",
+    "info": "设置通知 URL 环境变量，并在 settings.js 启用名为 file 的持久化 context store。ACK 表示已进入 Node-RED 通知队列。开发联调页面：http://<node-red-host>:1880/sos-simulator",
+    "x": 260,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-broker",
+    "type": "mqtt-broker",
+    "name": "ESP32 MQTT Broker",
+    "broker": "af0111c7.ala.cn-shenzhen.emqxsl.cn",
+    "port": "8883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": true,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": "",
+    "tls": "emqxsl-ca",
+    "credentials": {
+      "user": "node-red-sos",
+      "password": "$(EMQX_NODE_RED_PASSWORD)"
+    }
+  },
+  {
+    "id": "emqxsl-ca",
+    "type": "tls-config",
+    "name": "EMQX Cloud CA",
+    "cert": "",
+    "key": "",
+    "ca": "/Volumes/G/Downloads/emqxsl-ca.crt",
+    "certname": "",
+    "keyname": "",
+    "caname": "emqxsl-ca.crt",
+    "servername": "af0111c7.ala.cn-shenzhen.emqxsl.cn",
+    "verifyservercert": true,
+    "alpnprotocol": "",
+    "credentials": {}
+  },
+  {
+    "id": "elderly-sos-in",
+    "type": "mqtt in",
+    "z": "elderly-sos-tab",
+    "name": "接收 SOS 报警",
+    "topic": "devices/+/alert",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "elderly-sos-broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 130,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-json"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-json",
+    "type": "json",
+    "z": "elderly-sos-tab",
+    "name": "解析报警 JSON",
+    "property": "payload",
+    "action": "",
+    "pretty": false,
+    "x": 330,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-handler"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-handler",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "校验、去重、生成通知",
+    "func": "let p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString('utf8');\nif (typeof p === 'string') {\n    try { p = JSON.parse(p); } catch (e) { p = null; }\n}\nconst RETENTION_MS = 24 * 60 * 60 * 1000;\n\nif (!p || p.type !== 'sos' || !p.event_id || !p.device_id) {\n    node.warn('忽略格式不完整的 SOS 报警');\n    return null;\n}\n\nconst now = Date.now();\nlet cache;\ntry { cache = flow.get('sosDedupe', 'file') || {}; } catch (e) { cache = flow.get('sosDedupe') || {}; }\nfor (const key of Object.keys(cache)) {\n    if (now - cache[key] > RETENTION_MS) delete cache[key];\n}\nconst dedupeKey = `${p.device_id}:${p.event_id}`;\nconst duplicate = Boolean(cache[dedupeKey]);\ncache[dedupeKey] = now;\ntry { flow.set('sosDedupe', cache, 'file'); } catch (e) { flow.set('sosDedupe', cache); }\n\nconst ackTopic = String(msg.topic).replace(/\\/alert$/, '/alert/ack');\nconst ack = {\n    topic: ackTopic,\n    qos: 1,\n    retain: false,\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        device_id: p.device_id,\n        accepted: true,\n        duplicate,\n        server: 'node-red',\n        delivery: 'accepted_by_nodered',\n        received_at: new Date(now).toISOString()\n    })\n};\n\n// Always ACK duplicates so the device can stop retrying. Only the first\n// event fans out to notification channels.\nif (duplicate) return [ack, null, null, null, null, null];\n\nconst text = `SOS 求助：设备 ${p.device_id} 触发报警\\n事件：${p.event_id}\\n来源：${p.source || 'unknown'}\\n设备运行：${p.uptime || 0}s\\n信号：${p.rssi ?? 'unknown'} dBm\\n固件：${p.firmware || 'unknown'}`;\n\nconst ntfyUrl = env.get('SOS_NTFY_URL') || '';\nconst ntfy = {\n    method: 'POST',\n    url: ntfyUrl,\n    headers: {\n        'Content-Type': 'text/plain; charset=utf-8',\n        'Title': `SOS ${p.device_id}`,\n        'Priority': 'urgent',\n        'Tags': 'rotating_light,warning'\n    },\n    payload: text,\n    sos: { event_id: p.event_id, channel: 'ntfy' }\n};\n\nconst telegramUrl = env.get('SOS_TELEGRAM_URL') || '';\nconst telegram = {\n    method: 'POST',\n    url: telegramUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        chat_id: env.get('SOS_TELEGRAM_CHAT_ID') || '',\n        text\n    }),\n    sos: { event_id: p.event_id, channel: 'telegram' }\n};\n\nconst smsUrl = env.get('SOS_SMS_URL') || '';\nconst sms = {\n    method: 'POST',\n    url: smsUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_SMS_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'sms' }\n};\n\nconst phoneUrl = env.get('SOS_PHONE_URL') || '';\nconst phone = {\n    method: 'POST',\n    url: phoneUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        event_id: p.event_id,\n        to: env.get('SOS_PHONE_TO') || '',\n        message: text\n    }),\n    sos: { event_id: p.event_id, channel: 'phone' }\n};\n\nconst barkUrl = env.get('SOS_BARK_URL') || '';\nconst bark = {\n    method: 'POST',\n    url: barkUrl,\n    headers: { 'Content-Type': 'application/json' },\n    payload: JSON.stringify({\n        title: `SOS 求助 ${p.device_id}`,\n        body: text,\n        group: 'esp32-sos',\n        sound: 'alarm',\n        level: 'active'\n    }),\n    sos: { event_id: p.event_id, channel: 'bark' }\n};\n\nreturn [ack, ntfy, telegram, sms, phone, bark];",
+    "outputs": 6,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 550,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-ack"
+      ],
+      [
+        "elderly-sos-ntfy-switch"
+      ],
+      [
+        "elderly-sos-telegram-switch"
+      ],
+      [
+        "elderly-sos-sms-switch"
+      ],
+      [
+        "elderly-sos-phone-switch"
+      ],
+      [
+        "elderly-sos-bark-switch"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-ack",
+    "type": "mqtt out",
+    "z": "elderly-sos-tab",
+    "name": "回传 ACK",
+    "topic": "",
+    "qos": "1",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "elderly-sos-broker",
+    "x": 800,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-ntfy-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置 ntfy URL？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 800,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-ntfy-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-ntfy-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送 ntfy",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1010,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-ntfy-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-ntfy-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "ntfy 结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1190,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-telegram-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置 Telegram URL？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 820,
+    "y": 200,
+    "wires": [
+      [
+        "elderly-sos-telegram-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-telegram-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送 Telegram",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1030,
+    "y": 200,
+    "wires": [
+      [
+        "elderly-sos-telegram-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-telegram-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "Telegram 结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1220,
+    "y": 200,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-sms-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置 SMS 适配器？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 810,
+    "y": 260,
+    "wires": [
+      [
+        "elderly-sos-sms-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sms-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送短信",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1020,
+    "y": 260,
+    "wires": [
+      [
+        "elderly-sos-sms-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sms-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "SMS 结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1190,
+    "y": 260,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-phone-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置电话适配器？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 810,
+    "y": 320,
+    "wires": [
+      [
+        "elderly-sos-phone-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-phone-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发起电话",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1020,
+    "y": 320,
+    "wires": [
+      [
+        "elderly-sos-phone-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-phone-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "电话结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1190,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "elderly-health-heartbeat-in",
+    "type": "mqtt in",
+    "z": "elderly-sos-tab",
+    "name": "接收设备心跳",
+    "topic": "devices/+/heartbeat",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "elderly-sos-broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 140,
+    "y": 430,
+    "wires": [
+      [
+        "elderly-health-heartbeat-json"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-heartbeat-json",
+    "type": "json",
+    "z": "elderly-sos-tab",
+    "name": "解析心跳 JSON",
+    "property": "payload",
+    "action": "",
+    "pretty": false,
+    "x": 350,
+    "y": 430,
+    "wires": [
+      [
+        "elderly-health-record"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-status-in",
+    "type": "mqtt in",
+    "z": "elderly-sos-tab",
+    "name": "接收设备在线状态",
+    "topic": "devices/+/status",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "elderly-sos-broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 500,
+    "wires": [
+      [
+        "elderly-health-record"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-record",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "记录设备活跃时间",
+    "func": "const parts = String(msg.topic || '').split('/');\nconst deviceId = parts.length >= 2 ? parts[1] : '';\nif (!deviceId) return null;\nlet health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst isHeartbeat = parts[2] === 'heartbeat';\nconst status = typeof msg.payload === 'string' ? msg.payload.trim() : '';\nconst entry = health[deviceId] || { lastSeen: 0, offline: false, notified: false };\nentry.lastSeen = now;\nif (!isHeartbeat && status === 'offline') {\n    entry.offline = true;\n} else if (!isHeartbeat && status === 'online') {\n    entry.offline = false;\n    entry.notified = false;\n} else if (isHeartbeat) {\n    entry.offline = false;\n    entry.notified = false;\n}\nhealth[deviceId] = entry;\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 590,
+    "y": 465,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "elderly-health-inject",
+    "type": "inject",
+    "z": "elderly-sos-tab",
+    "name": "每 30 秒检查离线",
+    "props": [],
+    "repeat": "30",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "5",
+    "topic": "",
+    "x": 160,
+    "y": 600,
+    "wires": [
+      [
+        "elderly-health-check"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-check",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "检查心跳超时",
+    "func": "let health;\ntry { health = flow.get('deviceHealth', 'file') || {}; } catch (e) { health = flow.get('deviceHealth') || {}; }\nconst now = Date.now();\nconst TIMEOUT_MS = 90000;\nconst messages = [];\nfor (const deviceId of Object.keys(health)) {\n    const entry = health[deviceId];\n    if (!entry || entry.offline || !entry.lastSeen || now - entry.lastSeen <= TIMEOUT_MS || entry.notified) continue;\n    entry.notified = true;\n    messages.push({\n        url: env.get('SOS_NTFY_URL') || '',\n        method: 'POST',\n        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Title': `设备离线 ${deviceId}`, 'Priority': 'high', 'Tags': 'warning' },\n        payload: `SOS 设备离线：${deviceId} 已超过 ${Math.round(TIMEOUT_MS / 1000)} 秒没有心跳。`,\n        health: { device_id: deviceId, detected_at: new Date(now).toISOString() }\n    });\n}\ntry { flow.set('deviceHealth', health, 'file'); } catch (e) { flow.set('deviceHealth', health); }\nreturn messages.length ? [messages] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 600,
+    "wires": [
+      [
+        "elderly-health-switch"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置离线通知 URL？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 650,
+    "y": 600,
+    "wires": [
+      [
+        "elderly-health-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送离线通知",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 900,
+    "y": 600,
+    "wires": [
+      [
+        "elderly-health-debug"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-health-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "离线通知结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1140,
+    "y": 600,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-ntfy-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "ntfy 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nif (attempt >= 3) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1190,
+    "y": 140,
+    "wires": [
+      [
+        "elderly-sos-ntfy-debug"
+      ],
+      [
+        "elderly-sos-ntfy-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-ntfy-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "ntfy 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1190,
+    "y": 190,
+    "wires": [
+      [
+        "elderly-sos-ntfy-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-telegram-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "telegram 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nif (attempt >= 3) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1210,
+    "y": 200,
+    "wires": [
+      [
+        "elderly-sos-telegram-debug"
+      ],
+      [
+        "elderly-sos-telegram-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-telegram-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "telegram 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1210,
+    "y": 250,
+    "wires": [
+      [
+        "elderly-sos-telegram-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sms-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "sms 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nif (attempt >= 3) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 260,
+    "wires": [
+      [
+        "elderly-sos-sms-debug"
+      ],
+      [
+        "elderly-sos-sms-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sms-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "sms 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1200,
+    "y": 310,
+    "wires": [
+      [
+        "elderly-sos-sms-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-phone-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "phone 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nif (attempt >= 3) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 320,
+    "wires": [
+      [
+        "elderly-sos-phone-debug"
+      ],
+      [
+        "elderly-sos-phone-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-phone-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "phone 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1200,
+    "y": 370,
+    "wires": [
+      [
+        "elderly-sos-phone-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sim-get",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "SOS 模拟器页面",
+    "url": "/sos-simulator",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 130,
+    "y": 760,
+    "wires": [
+      [
+        "elderly-sos-sim-template"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sim-template",
+    "type": "template",
+    "z": "elderly-sos-tab",
+    "name": "渲染 SOS 模拟器",
+    "field": "payload",
+    "fieldType": "msg",
+    "format": "html",
+    "syntax": "mustache",
+    "template": "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>SOS 推送模拟器</title>\n<style>\n:root{color-scheme:dark;font:15px/1.5 system-ui,sans-serif;background:#09111f;color:#edf5ff}\nbody{max-width:760px;margin:0 auto;padding:24px}main{background:#111d30;border:1px solid #29405e;border-radius:16px;padding:22px;box-shadow:0 16px 40px #0005}\nh1{margin-top:0;font-size:24px}p{color:#9fb0c8}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:block;color:#9fb0c8;font-size:13px}input,select,button{width:100%;box-sizing:border-box;margin-top:5px;border-radius:8px;border:1px solid #304967;background:#0a1627;color:#edf5ff;padding:10px;font:inherit}button{cursor:pointer;background:#196cc1;border-color:#3187df;font-weight:700}button.secondary{background:#24344a}.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.event{margin-top:18px;background:#091522;border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word}.hint{font-size:12px;color:#8294ad;margin-top:12px}@media(max-width:600px){.grid{grid-template-columns:1fr}}\n</style></head>\n<body><main>\n<h1>SOS 推送模拟器</h1>\n<p>仅用于开发联调。它会向 Node-RED 发布标准 <code>devices/&lt;device_id&gt;/alert</code> 事件，真实设备链路不会被修改。</p>\n<div class=\"grid\">\n<label>设备 ID<input id=\"device\" value=\"simulator-device\"></label>\n<label>事件 ID（留空自动生成）<input id=\"event\" placeholder=\"simulator-device-sim-...\"></label>\n<label>触发来源<select id=\"source\"><option value=\"web-simulator\">网页模拟</option><option value=\"button\">实体按钮</option><option value=\"web\">管理网页</option></select></label>\n<label>模拟器令牌（可选）<input id=\"token\" type=\"password\" placeholder=\"SOS_SIMULATOR_TOKEN\"></label>\n</div>\n<div class=\"actions\"><button id=\"send\">触发 SOS</button><button id=\"repeat\" class=\"secondary\" disabled>重复投递同一事件</button></div>\n<div id=\"event\" class=\"event\">等待触发…</div>\n<div class=\"hint\">重复投递按钮用于验证 event_id 去重：第一次会通知，重复消息只会 ACK。</div>\n</main>\n<script>\nconst $=id=>document.getElementById(id);let last=null;\nfunction show(v){$('event').textContent=typeof v==='string'?v:JSON.stringify(v,null,2)}\nasync function send(repeat=false){\n  const device=$('device').value.trim()||'simulator-device';\n  const eventId=repeat&&last?last.event_id:($('event').value.trim()||`${device}-sim-${Date.now()}`);\n  const body={device_id:device,event_id:eventId,type:'sos',source:$('source').value,uptime:0,rssi:0,firmware:'web-simulator'};\n  try{\n    const headers={'Content-Type':'application/json'};if($('token').value)headers['X-SOS-Simulator-Token']=$('token').value;\n    const r=await fetch('/sos-simulator/trigger',{method:'POST',headers,body:JSON.stringify(body)});const out=await r.json();\n    last=out;$('repeat').disabled=!out.event_id;show(out);\n  }catch(e){show('请求失败：'+e)}\n}\n$('send').onclick=()=>send(false);$('repeat').onclick=()=>send(true);\n</script></body></html>",
+    "output": "str",
+    "x": 360,
+    "y": 760,
+    "wires": [
+      [
+        "elderly-sos-sim-page-response"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sim-page-response",
+    "type": "http response",
+    "z": "elderly-sos-tab",
+    "name": "返回模拟器页面",
+    "statusCode": "",
+    "headers": {},
+    "x": 610,
+    "y": 760,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-sim-post",
+    "type": "http in",
+    "z": "elderly-sos-tab",
+    "name": "接收模拟 SOS",
+    "url": "/sos-simulator/trigger",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 140,
+    "y": 840,
+    "wires": [
+      [
+        "elderly-sos-sim-function"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sim-function",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "生成模拟 SOS 事件",
+    "func": "let body = msg.payload;\nif (typeof body === 'string') {\n    try { body = JSON.parse(body); } catch (e) { body = {}; }\n}\nconst configuredToken = env.get('SOS_SIMULATOR_TOKEN') || '';\nconst suppliedToken = String((msg.req && msg.req.headers && (msg.req.headers['x-sos-simulator-token'] || msg.req.headers['X-SOS-Simulator-Token'])) || '');\nif (configuredToken && suppliedToken !== configuredToken) {\n    msg.statusCode = 401;\n    msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n    msg.payload = JSON.stringify({ published: false, error: 'unauthorized' });\n    return [null, msg];\n}\nconst deviceId = String(body.device_id || 'simulator-device').trim();\nif (!/^[A-Za-z0-9_-]{1,64}$/.test(deviceId)) {\n    msg.statusCode = 400;\n    msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n    msg.payload = JSON.stringify({ published: false, error: 'invalid device_id' });\n    return [null, msg];\n}\nconst eventId = String(body.event_id || `${deviceId}-sim-${Date.now()}`).trim();\nif (!/^[A-Za-z0-9_.:-]{1,128}$/.test(eventId)) {\n    msg.statusCode = 400;\n    msg.headers = { 'content-type': 'application/json; charset=utf-8' };\n    msg.payload = JSON.stringify({ published: false, error: 'invalid event_id' });\n    return [null, msg];\n}\nconst event = {\n    event_id: eventId,\n    device_id: deviceId,\n    type: 'sos',\n    source: String(body.source || 'web-simulator'),\n    uptime: Number(body.uptime || 0),\n    rssi: Number(body.rssi || 0),\n    firmware: String(body.firmware || 'web-simulator')\n};\nconst outgoing = {\n    topic: `devices/${deviceId}/alert`,\n    qos: 1,\n    retain: false,\n    payload: JSON.stringify(event)\n};\nconst response = {\n    ...msg,\n    statusCode: 202,\n    headers: { 'content-type': 'application/json; charset=utf-8' },\n    payload: JSON.stringify({ published: true, event_id: eventId, device_id: deviceId, topic: outgoing.topic })\n};\nreturn [outgoing, response];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 840,
+    "wires": [
+      [
+        "elderly-sos-sim-mqtt"
+      ],
+      [
+        "elderly-sos-sim-response"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-sim-mqtt",
+    "type": "mqtt out",
+    "z": "elderly-sos-tab",
+    "name": "发布模拟 SOS",
+    "topic": "",
+    "qos": "1",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "elderly-sos-broker",
+    "x": 650,
+    "y": 820,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-sim-response",
+    "type": "http response",
+    "z": "elderly-sos-tab",
+    "name": "返回模拟结果",
+    "statusCode": "",
+    "headers": {},
+    "x": 650,
+    "y": 880,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-bark-switch",
+    "type": "switch",
+    "z": "elderly-sos-tab",
+    "name": "已配置 Bark URL？",
+    "property": "url",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "neq",
+        "v": "",
+        "vt": "str"
+      }
+    ],
+    "checkall": "true",
+    "repair": false,
+    "outputs": 1,
+    "x": 800,
+    "y": 220,
+    "wires": [
+      [
+        "elderly-sos-bark-http"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-bark-http",
+    "type": "http request",
+    "z": "elderly-sos-tab",
+    "name": "发送 Bark",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 1010,
+    "y": 220,
+    "wires": [
+      [
+        "elderly-sos-bark-result"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-bark-result",
+    "type": "function",
+    "z": "elderly-sos-tab",
+    "name": "Bark 结果与重试",
+    "func": "const status = Number(msg.statusCode || 0);\nconst attempt = Number(msg.sos && msg.sos.attempt || 0);\nif (status >= 200 && status < 300) return [msg, null];\nif (attempt >= 3) {\n    node.warn(`通知渠道失败，已达到重试上限：${msg.sos && msg.sos.channel || 'unknown'}`);\n    return [msg, null];\n}\nmsg.sos = msg.sos || {};\nmsg.sos.attempt = attempt + 1;\nreturn [null, msg];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1190,
+    "y": 220,
+    "wires": [
+      [
+        "elderly-sos-bark-debug"
+      ],
+      [
+        "elderly-sos-bark-retry"
+      ]
+    ]
+  },
+  {
+    "id": "elderly-sos-bark-debug",
+    "type": "debug",
+    "z": "elderly-sos-tab",
+    "name": "Bark 结果",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "statusCode",
+    "statusType": "msg",
+    "x": 1380,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "elderly-sos-bark-retry",
+    "type": "delay",
+    "z": "elderly-sos-tab",
+    "name": "Bark 5 秒后重试",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 1380,
+    "y": 270,
+    "wires": [
+      [
+        "elderly-sos-bark-http"
+      ]
+    ]
+  }
+]

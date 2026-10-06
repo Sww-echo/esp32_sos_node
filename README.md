@@ -13,6 +13,8 @@
 - 保留 Espressif BLE Wi-Fi 配网
 - MQTT 参数持久化设置、连接状态和命令测试
 - MQTT 在线状态、遗嘱、遥测上报和自动重连
+- SOS 按钮模拟、报警事件持久化、ACK、重试和心跳
+- SOS 报警状态网页展示与测试报警入口
 - 网页重新启动设备、清除 Wi-Fi 配网
 - 局域网 mDNS 地址
 
@@ -21,7 +23,7 @@
 ### 尚未配网
 
 1. 手机或电脑连接热点 `ESP32S3-Setup-xxxx`（后四位以实际显示为准）。
-2. 热点密码为 `12345678`。
+2. 开发固件热点密码为 `12345678`；生产固件首次启动会生成独立密码，并在串口日志显示。
 3. 浏览器打开 `http://192.168.4.1`。
 4. 扫描并填写一个 2.4 GHz Wi-Fi。
 
@@ -39,20 +41,51 @@
 
 - 蓝牙设备：`PROV_ESP32S3`
 - 安全模式：Security 1
-- PoP：`12345678`
+- PoP：开发固件为 `12345678`；生产固件使用首次启动时生成的独立 PoP。
 - Wi-Fi：仅支持 2.4 GHz
 
 ## MQTT
 
-默认服务器只是占位地址 `192.168.1.20:1883`，可以直接在管理页面修改并保存。
+当前开发板已配置为 EMQX Cloud TLS：`af0111c7.ala.cn-shenzhen.emqxsl.cn:8883`。
+设备账号密码保存在设备 NVS 中，不写入仓库；更换 Broker 时可以在管理页面修改主机、端口、账号和密码。TLS 开关与 CA 证书随固件编译配置。
 
 - `devices/<设备ID>/status`
 - `devices/<设备ID>/telemetry`
 - `devices/<设备ID>/command`
+- `devices/<设备ID>/alert`
+- `devices/<设备ID>/alert/ack`
+- `devices/<设备ID>/heartbeat`
 
 向 command 主题发送 `status` 会立即上报一次遥测，发送 `restart` 会重启设备。
 
-当前 MQTT 使用明文 TCP，适合局域网测试。正式部署应改用 TLS 8883、独立设备账号和主题访问控制。
+### SOS 报警逻辑（当前开发阶段）
+
+- 当前使用 BOOT 键（GPIO0）模拟求助按钮，稳定按下后触发一次 SOS。
+- 报警事件会写入 NVS，带稳定的 `event_id`；最多保存当前事件加 4 条等待事件，MQTT 断线或设备重启后仍会尝试发送。
+- 服务端应在 `alert/ack` 主题返回包含相同 `event_id` 的 ACK，例如：
+
+```json
+{"event_id":"<设备ID>-000001","accepted":true,"server":"node-red"}
+```
+
+- 报警消息不使用 retained；在线状态沿用 retained + LWT；heartbeat 包含设备在线和报警队列状态。
+- Node-RED 的 ACK 表示服务端已经接收并提交通知队列；第三方通知渠道的最终送达由服务端队列和重试策略负责。
+- 管理网页中的“发送测试报警”会走和按钮相同的事件管线。
+- PubSubClient 当前发布接口为 QoS 0，首版通过 NVS、ACK、重试和服务端 `event_id` 幂等实现可靠事件语义。
+
+生产版本必须更换为独立 GPIO，不能把 GPIO0 作为老人求助按钮。
+
+## Node-RED 通知流程
+
+项目提供了可导入的 [Node-RED SOS 流程](integrations/node-red/sos-flow.json)、[配置说明](integrations/node-red/README.md) 和 [部署流程](integrations/node-red/DEPLOYMENT.md)。流程已切换到 EMQX Cloud TLS 8883，并会按 `event_id` 去重、回传 ACK，支持 Bark、ntfy、Telegram、短信和电话 HTTP 适配器。当前开发云端已为设备和 Node-RED 配置独立账号及按主题 ACL。
+
+导入流程后可打开 `http://<Node-RED 地址>:1880/sos-simulator`，用网页生成 SOS 事件并重复投递同一个 `event_id` 来验证通知和去重交互。
+
+当前电脑的联调实例地址是 `http://127.0.0.1:1880/sos-simulator`。
+
+当前开发板使用 EMQX Cloud 的 TLS 端口 8883。正式部署前应在 `app_config.h` 设置 `PRODUCTION_BUILD=true`，更换 SOS GPIO，再给每台设备配置独立账号和主题 ACL；生产构建缺少 TLS/CA 或仍使用 GPIO0 会直接编译失败。
+
+管理网页现在使用 HTTP Basic Authentication。首次启动会生成每台设备独立的管理员密码，并只在串口日志中显示一次；请在串口日志中保存密码。也可以在 `app_config.h` 中为受控开发设备设置 `WEB_ADMIN_PASSWORD`。
 
 ## VS Code / PlatformIO
 
